@@ -2094,6 +2094,58 @@ def download_excel(
     )
 
 
+@router.get("/{job_id}/report/tvs-extraction")
+def download_tvs_extraction(
+    job_id: str,
+    page: int | None = Query(None, ge=1),
+    area_page: int | None = Query(None, ge=1),
+    area_x: float | None = Query(None),
+    area_y: float | None = Query(None),
+    area_w: float | None = Query(None, gt=0),
+    area_h: float | None = Query(None, gt=0),
+    user: dict = Depends(require_perm("read")),
+):
+    """TVS extraction report (Excel): Summary + Extraction + Notes, answer-key layout."""
+    from app.services.tvs_extraction_report import build_tvs_extraction_xlsx
+
+    meta = _load_meta(job_id)
+    jd = _job_dir(job_id)
+    files = meta.get("files") or []
+    if not files:
+        raise HTTPException(status_code=404, detail="No source file")
+    src = jd / files[int(meta.get("active_file") or 0)]["path"]
+    if not src.is_file():
+        raise HTTPException(status_code=404, detail="Source PDF missing")
+    suffix = _report_filter_suffix(page, area_page, area_w, area_h)
+    rows = _filtered_report_rows(
+        meta,
+        jd,
+        page=page,
+        area_page=area_page,
+        area_x=area_x,
+        area_y=area_y,
+        area_w=area_w,
+        area_h=area_h,
+    )
+    keep = {(int(r.get("page") or 1), int(r.get("balloon") or 0)) for r in rows}
+    balloons = [
+        b for b in (meta.get("balloons") or [])
+        if (int(b.get("page") or 1), int(b.get("balloon") or 0)) in keep
+    ]
+    try:
+        xlsx = build_tvs_extraction_xlsx(meta, src, rows, balloons)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"TVS extraction report failed: {e}") from e
+    out = jd / f"TVS_extraction_report{suffix}.xlsx"
+    out.write_bytes(xlsx)
+    return FileResponse(
+        out,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=f"{job_id}_TVS_extraction_report{suffix}.xlsx",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 def _master_payload(meta: dict, rows: list[dict]) -> dict:
     _ensure_measure_columns(meta)
     _ensure_report_date(meta)

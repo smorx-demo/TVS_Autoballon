@@ -191,7 +191,7 @@ def _pvz_to_pdf(src: Path, dest: Path) -> dict:
             hint="Set SMORX_PVZ_CONVERTER to a command with {in} and {out}, e.g. "
             "CreaView export tool, or convert PVZ → PDF with Creo View / publish.",
         )
-    cmd_str = template.format(in=str(src), out=str(dest))
+    cmd_str = template.format(**{"in": str(src), "out": str(dest)})
     proc = subprocess.run(
         cmd_str,
         shell=True,

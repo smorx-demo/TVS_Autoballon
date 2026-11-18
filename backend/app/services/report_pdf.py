@@ -599,24 +599,58 @@ def build_report_xlsx(
     return buf.getvalue()
 
 
+_NUM = r"\d+(?:[.,]\d+)?"
+_SNUM = r"[+-]\s*" + _NUM
+_DEV = r"(?:" + _SNUM + r"|0(?:[.,]0+)?)"
+
+
+def _n(s: str) -> str:
+    return s.replace(",", ".").replace(" ", "")
+
+
+def parse_tolerance(text: str) -> tuple[str, str, str]:
+    """
+    Split a dimension callout into (nominal, tol_low, tol_high) deviations.
+
+      25±0.1            → 25, -0.1, 0.1
+      30° ±0.25°        → 30, -0.25, 0.25
+      25 +0.05/-0.02    → 25, -0.02, +0.05
+      25 +0.05/0        → 25, 0, +0.05      (unilateral)
+      Ø20 0/-0.021      → 20, -0.021, 0
+      Ø20 +0.2/+0.1     → 20, +0.1, +0.2
+      60 H7 (+0.030/0)  → 60, 0, +0.030     (fit with printed limits)
+      [25]              → 25, "", ""        (basic: tolerance comes from the FCF)
+    Unparseable tolerance → first number as nominal and empty limits.
+    """
+    t = (text or "").replace("−", "-").replace("–", "-").replace("±", "±")
+    m = re.search(r"(" + _NUM + r")\s*°?\s*±\s*(" + _NUM + r")", t)
+    if m:
+        d = _n(m.group(2))
+        return _n(m.group(1)), f"-{d}", d
+    m = re.search(
+        r"(" + _NUM + r")(?:\s*[A-Za-z]{1,2}\d{1,2})?(?:\s+\(?|\s*\()\s*(" + _DEV + r")\s*(?:/|\s)\s*(" + _DEV + r")\s*\)?",
+        t,
+    )
+    if m and (m.group(2).lstrip()[:1] in "+-" or m.group(3).lstrip()[:1] in "+-"):
+        a, b = _n(m.group(2)), _n(m.group(3))
+        hi, lo = (a, b) if float(a) >= float(b) else (b, a)
+        return _n(m.group(1)), lo, hi
+    m = re.search(r"(" + _NUM + r")\s*[A-Za-z]\d{1,2}\s*\(\s*(" + _SNUM + r")\s*\)", t)
+    if m:  # fit with a single printed limit, e.g. 60 H7 (+0.030): other limit is 0
+        d = _n(m.group(2))
+        return (_n(m.group(1)), "0", d) if d.startswith("+") else (_n(m.group(1)), d, "0")
+    m = re.search(_NUM, t)
+    return (_n(m.group(0)) if m else "", "", "")
+
+
 def characteristics_to_report_rows(chars: list[dict], zone_map: dict[int, str] | None = None) -> list[dict]:
     rows = []
     zone_map = zone_map or {}
     for i, c in enumerate(chars, start=1):
         text = str(c.get("text") or "")
-        nominal = text
-        tol_low = ""
-        tol_high = ""
-        m = re.search(r"([-+]?\d+(?:[.,]\d+)?)\s*±\s*([-+]?\d+(?:[.,]\d+)?)", text)
-        if m:
-            nominal = m.group(1).replace(",", ".")
-            t = m.group(2).replace(",", ".")
-            tol_low = f"-{t}"
-            tol_high = t
-        else:
-            m2 = re.search(r"[-+]?\d+(?:[.,]\d+)?", text)
-            if m2:
-                nominal = m2.group(0).replace(",", ".")
+        nominal, tol_low, tol_high = parse_tolerance(text)
+        if not nominal:
+            nominal = text
         bno = int(c.get("balloon") or i)
         ref = zone_map.get(bno) or f"P{c.get('page', 1)}"
         rows.append({

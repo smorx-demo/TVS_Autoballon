@@ -2532,6 +2532,33 @@ function ReportPanel({
     }
   };
 
+  const downloadTvsExtraction = async () => {
+    const name = "TVS_extraction_report";
+    setBusy(true);
+    setMsg(`Preparing TVS extraction report (${scopeLabel})…`);
+    try {
+      if (rowsDirty) {
+        await api.saveReportChunked(jobId, payload(), (m) => setMsg(m));
+      } else if (reportDirty) {
+        await api.saveReport(jobId, { ...payload(), rows: [] }, { localOnly: true, headersOnly: true });
+      }
+      setRowsDirty(false);
+      setReportDirty(false);
+      const srcName = job.files?.[0]?.name || "";
+      const stem = (srcName.replace(/\.[^.]+$/, "") || jobId).replace(/[<>:"|?*\\/]/g, "_");
+      const savedPath = await api.downloadFile(
+        api.downloadTvsExtraction(jobId, downloadFilter),
+        `${stem}_${name}${reportFilterSuffix(downloadFilter)}.xlsx`,
+      );
+      setMsg(`TVS extraction report (${scopeLabel}) saved to:\n${savedPath}`);
+    } catch (e: any) {
+      setMsg("");
+      onError(e.message || "TVS extraction report download failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const downloadExport = async (kind: "excel" | "csv" | "json") => {
     setBusy(true);
     setMsg(`Preparing ${kind.toUpperCase()} (${scopeLabel})…`);
@@ -2712,6 +2739,12 @@ function ReportPanel({
                 PDF
               </button>
               <button className="btn btn-outline btn-sm" disabled={busy || !filteredRows.length} onClick={() => void downloadTemplate("cmq", "excel")}>
+                Excel
+              </button>
+            </div>
+            <div className="row report-download-formats">
+              <span className="muted report-download-label">TVS extraction report:</span>
+              <button className="btn btn-outline btn-sm" disabled={busy || !filteredRows.length} onClick={() => void downloadTvsExtraction()}>
                 Excel
               </button>
             </div>

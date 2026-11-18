@@ -206,6 +206,19 @@ def _in_part_drawing_zone(x: float, y: float, page_rect: fitz.Rect) -> bool:
 # Order matters: BSP R-fraction BEFORE radius; O+decimal for ⌀.
 # =====================================================
 
+# Deviation pair after a nominal: at least one side signed; the other may be a bare 0.
+# Separated by "/" or whitespace (stacked limits merged by _merge_nearby_tol use "/").
+_TOL_SIGNED = r"[+-]\s*\d+(?:[.,]\d+)?"
+_TOL_DEV = r"(?:" + _TOL_SIGNED + r"|0(?:[.,]0+)?)"
+# Leading space or "(" is required so "10 +1" is never read as nominal 1 + "0 +1".
+_TOL_DEV_PAIR = (
+    r"(?:\s+\(?|\s*\()\s*(?:" + _TOL_SIGNED + r"\s*(?:/|\s)\s*" + _TOL_DEV
+    + r"|0(?:[.,]0+)?\s*(?:/|\s)\s*" + _TOL_SIGNED + r")\s*\)?"
+)
+
+# Optional ISO fit code before printed limits: Ø35 H7 +0.025/0
+_FIT_OPT = r"(?:\s*[A-Za-z]{1,2}\d{1,2})?"
+
 _DIMENSION_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
     # --- diameter (IS 10714) — symbol forms first ---
     # Optional qty (xN) / TYP / THRU HOLES suffixes (common on Tata vertical callouts)
@@ -422,6 +435,13 @@ _DIMENSION_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
     ("tol_unequal", re.compile(
         r"^\d+(?:[.,]\d+)?\s*[+]\s*\d+(?:[.,]\d+)?\s*/?\s*[-]\s*\d+(?:[.,]\d+)?$"
     ), "tolerance"),
+    # Unilateral / same-sign deviations: 25 +0.05/0 · 25 0/-0.02 · Ø20 +0.2/+0.1 · R5 (-0.1/-0.3)
+    ("diameter_tol_dev", re.compile(
+        r"^[Ø⌀φΦ]\s*\d+(?:[.,]\d+)?" + _FIT_OPT + _TOL_DEV_PAIR + r"$", re.IGNORECASE), "diameter"),
+    ("radius_tol_dev", re.compile(
+        r"^R\s*\d+(?:[.,]\d+)?" + _TOL_DEV_PAIR + r"$", re.IGNORECASE), "radius"),
+    ("tol_unilateral", re.compile(
+        r"^\d+(?:[.,]\d+)?" + _FIT_OPT + _TOL_DEV_PAIR + r"$"), "tolerance"),
     ("limit_dim", re.compile(
         r"^\d+[.,]\d+\s*/\s*\d+[.,]\d+$"
     ), "tolerance"),
@@ -880,6 +900,7 @@ _DIM_CATEGORIES = frozenset({
     "fit",
     "chamfer",
     "feature",
+    "basic",
     "weld",
     "reference",
     "surface",
@@ -897,6 +918,17 @@ _STRICT_BALLOON_CATEGORIES = frozenset({
     "fit",
     "chamfer",
     "feature",
+    "basic",
+})
+
+# Plain values that may sit in a drawn box (basic dimension) — see _is_boxed_dimension.
+_BASIC_BOX_PATTERNS = frozenset({
+    "linear_integer",
+    "linear_decimal",
+    "linear_mm",
+    "angle_deg",
+    "diameter_symbol",
+    "radius",
 })
 
 
@@ -1336,6 +1368,91 @@ def _merge_nearby_tol(
         used[i] = True
         used[best_j] = True
         out.append((_clean(ht) + f" ({t})", fitz.Rect(hr) | fitz.Rect(rect), max(hs, size), hd))
+
+    # Pass 2c: stacked deviation pair beside a plain nominal → "25 +0.05/0"
+    # (upper deviation drawn above lower, both just right of the host; horizontal text only)
+    def _is_plain_host(t: str) -> bool:
+        t = _clean(t)
+        return bool(re.match(r"^(?:[Ø⌀φΦ]\s*|R\s*)?\d+(?:[.,]\d+)?$", t, re.IGNORECASE))
+
+    for j, (ht, hr, hs, hd) in enumerate(items):
+        if used[j] or not _is_plain_host(ht):
+            continue
+        if abs(float(hd[0])) < 0.9:
+            continue
+        hcy = (hr.y0 + hr.y1) / 2
+        frags: list[int] = []
+        for i, (t2, r2, s2, d2) in enumerate(items):
+            if i == j or used[i] or not _is_limit_frag(t2):
+                continue
+            if _clean(t2).startswith("±") or abs(float(d2[0])) < 0.9:
+                continue
+            if s2 > hs * 1.1:
+                continue
+            gap = r2.x0 - hr.x1
+            if gap < -hs * 0.5 or gap > hs * 2.5 * ms:
+                continue
+            if abs((r2.y0 + r2.y1) / 2 - hcy) > hs * 1.2 * ms:
+                continue
+            frags.append(i)
+        if len(frags) != 2:
+            continue
+        a, b = sorted(frags, key=lambda k: items[k][1].y0)
+        (ta, ra, sa, _), (tb, rb, sb, _) = items[a], items[b]
+        if abs(ra.x0 - rb.x0) > max(sa, sb) * 1.5:
+            continue
+        if ra.y1 > rb.y0 + max(sa, sb) * 0.5:  # must be stacked, not side by side
+            continue
+        up, lo = _clean(ta).replace(" ", ""), _clean(tb).replace(" ", "")
+        if not (up[:1] in "+-" or lo[:1] in "+-"):
+            continue
+        for k in (a, b, j):
+            used[k] = True
+        out.append((
+            f"{_clean(ht)} {up}/{lo}",
+            fitz.Rect(hr) | fitz.Rect(ra) | fitz.Rect(rb),
+            hs,
+            hd,
+        ))
+
+    # Pass 2d: one deviation already on the host line, the other stacked beside it
+    # ("10 +1" + "0" → "10 +1/0"; "Ø35 H7 +0.025" + "0" → "Ø35 H7 +0.025/0"). Any text direction — vertical callouts extract this way.
+    for j, (ht, hr, hs, hd) in enumerate(items):
+        if used[j]:
+            continue
+        hm = re.match(
+            r"^((?:[Ø⌀φΦ]\s*|R\s*)?\d+(?:[.,]\d+)?(?:\s*[A-Za-z]{1,2}\d{1,2})?)\s+([+-]\s*\d+(?:[.,]\d+)?|0(?:[.,]0+)?)$",
+            _clean(ht),
+            re.IGNORECASE,
+        )
+        if not hm:
+            continue
+        # "16 0" + "-0.1": a bare 0 on the host line needs a signed partner ("16 0" + "0" is not a tolerance)
+        need_signed = hm.group(2)[:1] not in "+-"
+        reach = hs * 1.5 * ms
+        best_i, best_d = None, 1e9
+        for i, (t2, r2, s2, d2) in enumerate(items):
+            if i == j or used[i] or not _is_limit_frag(t2) or _clean(t2).startswith("±"):
+                continue
+            if need_signed and _clean(t2)[:1] not in "+-":
+                continue
+            if s2 > hs * 0.9:  # deviations are set smaller than the nominal
+                continue
+            if not fitz.Rect(hr.x0 - reach, hr.y0 - reach, hr.x1 + reach, hr.y1 + reach).intersects(r2):
+                continue
+            dist = math.hypot((r2.x0 + r2.x1 - hr.x0 - hr.x1) / 2, (r2.y0 + r2.y1 - hr.y0 - hr.y1) / 2)
+            if dist < best_d:
+                best_i, best_d = i, dist
+        if best_i is None:
+            continue
+        frag = _clean(items[best_i][0]).replace(" ", "")
+        used[j] = used[best_i] = True
+        out.append((
+            f"{hm.group(1)} {hm.group(2).replace(' ', '')}/{frag}",
+            fitz.Rect(hr) | fitz.Rect(items[best_i][1]),
+            hs,
+            hd,
+        ))
 
     # Pass 3: leftovers
     for i, (text, rect, size, direction) in enumerate(items):
@@ -2059,6 +2176,120 @@ def _has_drawn_parentheses(drawings: list, rect: fitz.Rect) -> bool:
     return horiz or vert
 
 
+def _axis_segments(
+    drawings: list, area: fitz.Rect
+) -> tuple[list[tuple[float, float, float]], list[tuple[float, float, float]]]:
+    """
+    Horizontal (y, x0, x1) and vertical (x, y0, y1) stroke segments intersecting `area`,
+    from lines, rectangles and quads in page.get_drawings().
+    """
+    hs: list[tuple[float, float, float]] = []
+    vs: list[tuple[float, float, float]] = []
+
+    def _add(p: fitz.Point, q: fitz.Point) -> None:
+        if abs(p.y - q.y) <= 0.6:
+            hs.append(((p.y + q.y) / 2, min(p.x, q.x), max(p.x, q.x)))
+        elif abs(p.x - q.x) <= 0.6:
+            vs.append(((p.x + q.x) / 2, min(p.y, q.y), max(p.y, q.y)))
+
+    for d in drawings:
+        r = d.get("rect")
+        if r is None or not area.intersects(r):
+            continue
+        for it in d.get("items") or ():
+            op = it[0]
+            if op == "l":
+                _add(it[1], it[2])
+            elif op == "re":
+                q = fitz.Rect(it[1])
+                _add(q.tl, q.tr)
+                _add(q.bl, q.br)
+                _add(q.tl, q.bl)
+                _add(q.tr, q.br)
+            elif op == "qu":
+                qd = it[1]
+                pts = [qd.ul, qd.ur, qd.lr, qd.ll]
+                for k in range(4):
+                    _add(pts[k], pts[(k + 1) % 4])
+    return hs, vs
+
+
+def _in_rotated_box(drawings: list, rect: fitz.Rect, size: float) -> bool:
+    """
+    Inclined basic dimension: text and its box are rotated together, so the box is a
+    closed 4-segment loop that is NOT axis-aligned and whose bounds hug the text bounds.
+    (Level boxes are handled by the axis-segment check; FCFs are always level.)
+    """
+    slack = size * 1.5
+    for d in drawings:
+        r = d.get("rect")
+        if r is None or not r.intersects(rect):
+            continue
+        its = d.get("items") or ()
+        if len(its) == 1 and its[0][0] == "qu":
+            q = its[0][1]
+            segs = [(q.ul, q.ur), (q.ur, q.lr), (q.lr, q.ll), (q.ll, q.ul)]
+        elif len(its) == 4 and all(it[0] == "l" for it in its):
+            segs = [(it[1], it[2]) for it in its]
+            if abs(segs[0][0].x - segs[-1][1].x) > 1.0 or abs(segs[0][0].y - segs[-1][1].y) > 1.0:
+                continue  # not closed
+        else:
+            continue
+        if all(abs(a.x - b.x) <= 0.6 or abs(a.y - b.y) <= 0.6 for a, b in segs):
+            continue  # level box
+        if not (r.x0 <= rect.x0 + 1.5 and r.y0 <= rect.y0 + 1.5 and r.x1 >= rect.x1 - 1.5 and r.y1 >= rect.y1 - 1.5):
+            continue
+        if r.width - rect.width > slack * 2 or r.height - rect.height > slack * 2:
+            continue
+        return True
+    return False
+
+
+def _is_boxed_dimension(drawings: list, rect: fitz.Rect, size: float) -> bool:
+    """
+    True when a dimension value is tightly enclosed by a drawn rectangle — a basic
+    (theoretically exact) dimension per ISO 1101 / ASME Y14.5, e.g. |25|.
+
+    Rejects GD&T feature-control-frame cells: a frame's outer border runs well past the
+    cell, or a neighbouring compartment shares the cell's left/right edge.
+    """
+    if _in_rotated_box(drawings, rect, size):
+        return True
+    pad_y = max(size * 0.9, 3.0)
+    pad_x = max(size * 1.6, 4.0)
+    area = fitz.Rect(rect.x0 - pad_x - size * 4, rect.y0 - pad_y, rect.x1 + pad_x + size * 4, rect.y1 + pad_y)
+    hs, vs = _axis_segments(drawings, area)
+    tol = 1.0
+
+    def _covers_x(seg: tuple[float, float, float], x0: float, x1: float) -> bool:
+        return seg[1] <= x0 + tol and seg[2] >= x1 - tol
+
+    def _covers_y(seg: tuple[float, float, float], y0: float, y1: float) -> bool:
+        return seg[1] <= y0 + tol and seg[2] >= y1 - tol
+
+    tops = [s for s in hs if rect.y0 - pad_y <= s[0] <= rect.y0 + tol and _covers_x(s, rect.x0, rect.x1)]
+    bots = [s for s in hs if rect.y1 - tol <= s[0] <= rect.y1 + pad_y and _covers_x(s, rect.x0, rect.x1)]
+    lefts = [s for s in vs if rect.x0 - pad_x <= s[0] <= rect.x0 + tol and _covers_y(s, rect.y0, rect.y1)]
+    rights = [s for s in vs if rect.x1 - tol <= s[0] <= rect.x1 + pad_x and _covers_y(s, rect.y0, rect.y1)]
+    if not (tops and bots and lefts and rights):
+        return False
+    lx = max(s[0] for s in lefts)
+    rx = min(s[0] for s in rights)
+    ty = max(s[0] for s in tops)
+    by = min(s[0] for s in bots)
+    box_w = rx - lx
+    # Horizontal borders must close the box, not run on into a multi-cell frame.
+    for group in (tops, bots):
+        if not any(s[1] >= lx - size * 0.8 and s[2] <= rx + size * 0.8 for s in group):
+            return False
+    # Adjacent compartment (FCF): another vertical stroke of the same height just outside.
+    for s in vs:
+        outside = (lx - size * 4 <= s[0] < lx - tol) or (rx + tol < s[0] <= rx + size * 4)
+        if outside and _covers_y(s, ty + tol, by - tol) and (s[2] - s[1]) <= (by - ty) * 1.3:
+            return False
+    return box_w > 0
+
+
 def _drawn_paren_ref_candidates(
     page: fitz.Page,
     items: list[tuple[str, fitz.Rect, float, tuple]],
@@ -2250,6 +2481,10 @@ def detect_dimensions(
                 tcx, tcy, size, drawings, revision_tris
             ):
                 continue
+            # Boxed value → basic (theoretically exact) dimension: no tolerance of its own.
+            if pattern in _BASIC_BOX_PATTERNS and _is_boxed_dimension(drawings, rect, size):
+                accepted = f"[{accepted}]"
+                category, pattern = "basic", "basic_boxed"
             if _is_same_dim(page_index + 1, accepted, rect, pattern, prior):
                 continue
             if not _category_allowed_for_balloon(category or "", pattern or ""):

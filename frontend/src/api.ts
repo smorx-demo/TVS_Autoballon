@@ -601,6 +601,8 @@ export const api = {
     fmt: "pdf" | "excel",
     filter?: ReportDownloadFilter,
   ) => withAuthQuery(`/api/jobs/${jobId}/report/${kind}/${fmt}${reportDownloadQuery(filter)}`),
+  downloadTvsExtraction: (jobId: string, filter?: ReportDownloadFilter) =>
+    withAuthQuery(`/api/jobs/${jobId}/report/tvs-extraction${reportDownloadQuery(filter)}`),
   downloadCsv: (jobId: string, filter?: ReportDownloadFilter) =>
     withAuthQuery(`/api/jobs/${jobId}/report/csv${reportDownloadQuery(filter)}`),
   downloadJson: (jobId: string, filter?: ReportDownloadFilter) =>
