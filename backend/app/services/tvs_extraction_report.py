@@ -1,6 +1,6 @@
 """
 TVS extraction report — one Excel workbook per drawing, in the layout of the
-SMX-DEMO-HF-001 expected-extraction answer key:
+expected-extraction answer-key layout:
 
   • Summary     — drawing identity, counts by feature type / sheet, scope coverage
   • Extraction  — one row per ballooned feature (ID, sheet, zone, mm coordinates, view,

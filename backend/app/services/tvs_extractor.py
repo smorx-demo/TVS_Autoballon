@@ -418,7 +418,8 @@ def _find_tables(pd: PageData, frame: fitz.Rect) -> list[Table]:
             row = [" ".join(l.text for l in sorted(cells[c], key=lambda l: (round(l.rect.y0), l.rect.x0))) for c in sorted(cells)]
             rows.append(row)
             row_rects.append(band)
-        if len(rows) < 3:
+        header_first = bool(rows) and all(not re.search(r"\d", c) and c.upper() == c for c in rows[0]) and len(rows[0]) >= 2
+        if len(rows) < 3 and not (len(rows) == 2 and header_first):
             continue
         tables.append(Table(bbox, rows, row_rects, _table_kind(rows), inside))
     return tables
@@ -1125,7 +1126,7 @@ def _dimension_line(pd: PageData, rect: fitz.Rect, arrows: list[Poly]) -> Seg | 
         vx, vy = s.b.x - s.a.x, s.b.y - s.a.y
         L2 = vx * vx + vy * vy
         tpar = ((c.x - s.a.x) * vx + (c.y - s.a.y) * vy) / L2
-        if not -0.1 <= tpar <= 1.1:
+        if not 0.1 <= tpar <= 0.9:  # text lies along the line, not beyond an arrow tip
             continue
         px, py = s.a.x + tpar * vx, s.a.y + tpar * vy
         dist = math.hypot(c.x - px, c.y - py)
