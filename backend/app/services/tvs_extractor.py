@@ -1662,6 +1662,28 @@ class Extraction:
     notes: list[Note]
     sheets: int
     page_rects: list[fitz.Rect]
+    frames: dict = field(default_factory=dict)        # sheet -> inner drawing frame
+    blocks: dict = field(default_factory=dict)        # sheet -> [(kind, rect)] title block / revision table
+
+
+NEAR_BORDER_MM = float(__import__("os").environ.get("TVS_NEAR_BORDER_MM", "15"))
+
+
+def near_border_note(ext: "Extraction", sheet: int, rect: fitz.Rect, limit_mm: float | None = None) -> str:
+    """'Placed near … border' / '… title block' when the annotation's text box is within limit_mm of
+    the drawing frame or the title-block / revision-table box (same rule for every feature)."""
+    lim = (NEAR_BORDER_MM if limit_mm is None else limit_mm) / PT_TO_MM
+    fr = ext.frames.get(sheet)
+    out = []
+    if fr is not None:
+        sides = [name for name, gap in (("left", rect.x0 - fr.x0), ("right", fr.x1 - rect.x1),
+                                         ("top", rect.y0 - fr.y0), ("bottom", fr.y1 - rect.y1)) if gap <= lim]
+        if sides:
+            out.append(f"Placed near {'/'.join(sides)} border")
+    for kind, br in ext.blocks.get(sheet, []):
+        if _rect_dist(rect, br) <= lim:
+            out.append(f"Placed near {kind}")
+    return "; ".join(out)
 
 
 def extract_drawing(pdf_path: str | Path) -> Extraction:
@@ -1684,6 +1706,8 @@ def _extract(doc: fitz.Document) -> Extraction:
     notes_region: dict[int, fitz.Rect | None] = {}
     grids_by_sheet: dict[int, tuple | None] = {}
     body_block: dict[int, list[fitz.Rect]] = {}
+    frames_by_sheet: dict[int, fitz.Rect] = {}
+    blocks_by_sheet: dict[int, list] = {}
 
     for pd in pages:
         sheet = pd.index + 1
@@ -1694,6 +1718,9 @@ def _extract(doc: fitz.Document) -> Extraction:
                 ln.used = True
         tables = _find_tables(pd, frame)
         all_tables.extend(tables)
+        frames_by_sheet[sheet] = fitz.Rect(frame)
+        blocks_by_sheet[sheet] = [({"title": "title block", "revision": "revision table"}[t.kind], fitz.Rect(t.rect))
+                                  for t in tables if t.kind in ("title", "revision")]
         table_rects = [t.rect for t in tables]
         for t in tables:
             for ln in t.lines:
@@ -1828,7 +1855,7 @@ def _extract(doc: fitz.Document) -> Extraction:
             _LOG.warning("TVS extractor: datum %s referenced by an FCF is defined %d times", d, defined.get(d, 0))
 
     all_notes.sort(key=lambda n: (n.sheet, n.rect.y0, n.rect.x0))
-    return Extraction(all_features, all_notes, len(pages), [p.rect for p in pages])
+    return Extraction(all_features, all_notes, len(pages), [p.rect for p in pages], frames_by_sheet, blocks_by_sheet)
 
 
 # ----------------------------------------------------------------------------- links
