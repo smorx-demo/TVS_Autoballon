@@ -824,14 +824,19 @@ N_GRADE_RA = {1: 0.025, 2: 0.05, 3: 0.1, 4: 0.2, 5: 0.4, 6: 0.8, 7: 1.6, 8: 3.2,
 def _surface_symbol_near(pd: PageData, rect: fitz.Rect) -> list[int]:
     """Path ids of check-mark (√) strokes near a roughness label: 3+ joined lines incl. a V."""
     area = rect + (-30, -30, 30, 30)
-    by_pid: dict[int, list[Seg]] = {}
-    for s in pd.segs:
-        if area.contains(s.a) and area.contains(s.b):
-            by_pid.setdefault(s.pid, []).append(s)
+    if getattr(pd, "_pid_segs", None) is None:
+        pd._pid_segs = {}
+        for s in pd.segs:
+            pd._pid_segs.setdefault(s.pid, []).append(s)
+        pd._filled_pids = {p.pid for p in pd.polys if p.filled}
     out = []
-    for pid, ss in by_pid.items():
-        incl = [s for s in ss if not s.is_h and not s.is_v]
-        if len(ss) >= 2 and len(incl) >= 1 and len(ss) <= 4:
+    for pid, ss in pd._pid_segs.items():
+        if pid in pd._filled_pids or not 2 <= len(ss) <= 4:
+            continue
+        # the whole open check-mark path lies near the label (not a long outline polyline)
+        if not all(area.contains(s.a) and area.contains(s.b) for s in ss):
+            continue
+        if any(not s.is_h and not s.is_v for s in ss):
             out.append(pid)
     return out
 
@@ -2026,6 +2031,8 @@ def _assign_critical(feats: list[Feature], flags: list[tuple[int, str, fitz.Rect
                 if hit:
                     hit.sort(key=lambda f: (f.sheet != sheet, math.hypot(f.center.x - r.x0, f.center.y - r.y0)))
                     tagged.append(hit[0])
+                else:
+                    _LOG.error("TVS extractor: CC table entry %s (%s) matches no feature", cid, ref)
         if not tagged:
             near = [f for f in feats if f.sheet == sheet and f.kind in ("fcf", "dim", "surface", "thread")]
             if near:
@@ -2104,4 +2111,28 @@ def _surface_host(pd: PageData, f: Feature, dims: list[Feature]) -> Feature | No
                                 dd = math.hypot(d.center.x - end.x, d.center.y - end.y)
                                 if dd < best_d:
                                     best, best_d = d, dd
+    if best is not None:
+        return best
+    # Shared surface edge: the symbol (or its leader tip) touches a part edge on which a
+    # dimension's arrow also lands -> both describe the same surface.
+    contacts = list(tips)
+    for s in lead:
+        end = s.b if _close(s.a, tip, 1.5) else s.a
+        for a in arrows:
+            if math.hypot(a.center.x - end.x, a.center.y - end.y) < 8:
+                end = max(a.pts, key=lambda q: math.hypot(q.x - tip.x, q.y - tip.y))
+        contacts.append(end)
+    edges = [s for s in pd.segs if s.pid not in sym_pids and s.length > 8 and not s.dashed
+             and any(_seg_near(c, s, 1.5) for c in contacts)]
+    for d in dims:
+        dl = _dimension_line(pd, d.rect, arrows)
+        if dl is None:
+            continue
+        ends = [dl.a, dl.b] + [max(a.pts, key=lambda q: math.hypot(q.x - (dl.a.x + dl.b.x) / 2, q.y - (dl.a.y + dl.b.y) / 2))
+                               for a in arrows if min(math.hypot(a.center.x - e.x, a.center.y - e.y) for e in (dl.a, dl.b)) < 6]
+        for e in ends:
+            if any(sg is not dl and _seg_near(e, sg, 2.0) for sg in edges):
+                dd = min(math.hypot(e.x - c.x, e.y - c.y) for c in contacts)
+                if dd < best_d:
+                    best, best_d = d, dd
     return best
