@@ -87,7 +87,6 @@ def _claude_text(prompt: str, *, max_tokens: int = 16000) -> str:
         {
             "model": _model(),
             "max_tokens": max_tokens,
-            "temperature": 0,
             "messages": [{"role": "user", "content": prompt}],
         },
     )
@@ -107,7 +106,6 @@ def _claude_vision(prompt: str, png_bytes: bytes, *, max_tokens: int = 16000) ->
         {
             "model": _model(),
             "max_tokens": max_tokens,
-            "temperature": 0,
             "messages": [
                 {
                     "role": "user",

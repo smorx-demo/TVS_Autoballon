@@ -94,7 +94,6 @@ For PVZ: flag missing sheets or empty views.
         {
             "model": _anthropic_model(),
             "max_tokens": 2048,
-            "temperature": 0,
             "messages": [
                 {
                     "role": "user",

@@ -166,7 +166,6 @@ def classify_with_claude(
         {
             "model": model,
             "max_tokens": 4096,
-            "temperature": 0,
             "messages": [
                 {"role": "user", "content": prompt},
             ],
