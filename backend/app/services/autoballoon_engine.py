@@ -3507,6 +3507,43 @@ def apply_ai_fallback(
     return added, trail
 
 
+_EXTRACTOR_CATEGORY = {
+    "Linear dimension": "linear", "Inclined linear dimension": "linear", "Diameter": "diameter",
+    "Radius": "radius", "Angular dimension": "angle", "Chamfer": "chamfer", "Fit (hole)": "fit",
+    "Fit (shaft)": "fit", "Basic dimension": "basic", "Basic dimension (PCD)": "basic", "Basic angle": "basic",
+    "Reference dimension": "reference", "Surface finish": "surface", "Thread": "thread", "Datum feature": "datum",
+}
+
+
+def extractor_characteristics(doc: fitz.Document) -> list[Characteristic]:
+    """
+    Balloon candidates from the drawing-level extractor (same feature list as the TVS
+    extraction report). Returns [] when the extractor does not apply, so callers fall back to
+    the legacy detector: SMORX_BALLOON_ENGINE=legacy, rotated pages, or no text layer (OCR).
+    """
+    import os
+
+    if os.environ.get("SMORX_BALLOON_ENGINE", "").strip().lower() == "legacy":
+        return []
+    if any(p.rotation for p in doc) or not any(p.get_text("text").strip() for p in doc):
+        return []
+    try:
+        from .tvs_extractor import _extract
+        feats = _extract(doc).features
+    except Exception:
+        return []
+    feats = sorted(feats, key=lambda f: (f.sheet, round(f.rect.y0 / 20), f.rect.x0))
+    out = []
+    for i, f in enumerate(feats, start=1):
+        cat = "gdt" if f.ftype.startswith("GD&T") else _EXTRACTOR_CATEGORY.get(f.ftype, "feature")
+        out.append(Characteristic(
+            balloon=i, page=f.sheet, text=f.text, x=float(f.rect.x0), y=float(f.rect.y0),
+            width=float(f.rect.width), height=float(f.rect.height),
+            category=cat, pattern=f"tvs_{f.kind or cat}", family="generic",
+        ))
+    return out
+
+
 def balloon_pdf(
     pdf_bytes: bytes,
     passes: int = 3,
@@ -3543,13 +3580,17 @@ def balloon_pdf(
         }
     src = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
-        chars, pass_log = detect_dimensions_multipass(
-            src,
-            passes=passes,
-            use_zones=use_zones,
-            use_tiles=use_tiles,
-            use_ocr=bool(use_ocr),
-        )
+        chars = extractor_characteristics(src)
+        if chars:
+            pass_log = [{"pass": 1, "level": 0, "added": len(chars), "total": len(chars), "mode": "tvs_extractor"}]
+        else:
+            chars, pass_log = detect_dimensions_multipass(
+                src,
+                passes=passes,
+                use_zones=use_zones,
+                use_tiles=use_tiles,
+                use_ocr=bool(use_ocr),
+            )
         mode = "per_page" if str(numbering_mode).strip().lower() == "per_page" else "continuous"
         chars = renumber_characteristics(chars, mode=mode)
         if use_learning:
@@ -3598,7 +3639,9 @@ def balloon_pdf(
 
         if extended_extract_enabled():
             extraction = extract_vector_drawing_data(src)
-            if balloon_gdt_surface_enabled():
+            # The drawing-level extractor already balloons GD&T and surface finish
+            from_extractor = bool(pass_log) and pass_log[0].get("mode") == "tvs_extractor"
+            if balloon_gdt_surface_enabled() and not from_extractor:
                 known = {c.text for c in chars}
                 extra = characteristics_from_extraction(extraction, known)
                 if extra:
