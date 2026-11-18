@@ -494,7 +494,7 @@ def _view_labels(pd: PageData, frame: fitz.Rect, claimed: list[fitz.Rect]) -> li
         for nx in sorted(pd.lines, key=lambda l: l.rect.y0):
             if nx.used or not (nx.text.startswith("(") or re.match(r"^SCALE\s+\d", nx.text, re.I)):
                 continue
-            if 0 <= nx.rect.y0 - rect.y1 <= max(6.0, ln.size) and nx.rect.x0 < rect.x1 and nx.rect.x1 > rect.x0:
+            if -0.25 * ln.size <= nx.rect.y0 - rect.y1 <= max(6.0, ln.size) and nx.rect.x0 < rect.x1 and nx.rect.x1 > rect.x0:
                 text = f"{text} {nx.text}"
                 rect |= nx.rect
                 nx.used = True
@@ -1255,7 +1255,7 @@ def _free_text_blocks(pd: PageData) -> list[list[TLine]]:
     for ln in left:
         for blk in blocks:
             last = blk[-1]
-            if 0 <= ln.rect.y0 - last.rect.y1 <= max(ln.size, last.size) * 1.2 and abs(ln.rect.x0 - blk[0].rect.x0) <= 4:
+            if -0.25 * last.size <= ln.rect.y0 - last.rect.y1 <= max(ln.size, last.size) * 1.2 and abs(ln.rect.x0 - blk[0].rect.x0) <= 4:
                 blk.append(ln)
                 break
         else:
