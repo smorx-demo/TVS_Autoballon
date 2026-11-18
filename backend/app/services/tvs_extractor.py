@@ -745,7 +745,9 @@ def _fmt(v) -> str:
 def detect_datum_features(pd: PageData, sheet: int, exclude: list[fitz.Rect]) -> list[Feature]:
     """Letter in a square box with a (filled or open) datum triangle attached by a short leader."""
     out = []
-    tris = [p for p in pd.polys if len(p.pts) == 3 and 4 <= max(p.rect.width, p.rect.height) <= 14]
+    # Datum triangles are near-equilateral; dimension arrowheads are long and thin
+    tris = [p for p in pd.polys if len(p.pts) == 3 and 4 <= max(p.rect.width, p.rect.height) <= 14
+            and max(p.rect.width, p.rect.height) / max(min(p.rect.width, p.rect.height), 0.1) <= 1.7]
     for ln in pd.lines:
         if ln.used or not re.fullmatch(r"[A-Z]{1,2}", ln.text) or any(e.contains(ln.center) for e in exclude):
             continue
@@ -762,16 +764,18 @@ def detect_datum_features(pd: PageData, sheet: int, exclude: list[fitz.Rect]) ->
             continue
         reach = max(box.width, box.height) * 3.5
         near = box + (-reach, -reach, reach, reach)
-        tri = next((t for t in tris if near.intersects(t.rect)), None)
-        if tri is None:
+
+        def linked(tri: Poly) -> bool:
+            # joined to the box by a line in any orientation (or touching it)
+            return box.intersects(tri.rect + (-1.5, -1.5, 1.5, 1.5)) or any(
+                (box + (-1.5, -1.5, 1.5, 1.5)).contains(s.a) and (tri.rect + (-2, -2, 2, 2)).contains(s.b)
+                or (box + (-1.5, -1.5, 1.5, 1.5)).contains(s.b) and (tri.rect + (-2, -2, 2, 2)).contains(s.a)
+                for s in pd.segs)
+
+        cands = sorted((t for t in tris if near.intersects(t.rect) and linked(t)), key=lambda t: _rect_dist(t.rect, box))
+        if not cands:
             continue
-        # The triangle must be joined to the box by a line (or touch it)
-        linked = box.intersects(tri.rect + (-1.5, -1.5, 1.5, 1.5)) or any(
-            (box + (-1.5, -1.5, 1.5, 1.5)).contains(s.a) and (tri.rect + (-2, -2, 2, 2)).contains(s.b)
-            or (box + (-1.5, -1.5, 1.5, 1.5)).contains(s.b) and (tri.rect + (-2, -2, 2, 2)).contains(s.a)
-            for s in pd.segs)
-        if not linked:
-            continue
+        tri = cands[0]
         ln.used = True
         out.append(Feature(sheet, fitz.Rect(ln.rect), "Datum feature", ln.text, nominal=ln.text, kind="datum",
                            details=[f"Datum {ln.text}"], meta={"box": box, "tri": fitz.Rect(tri.rect)}))
@@ -1771,6 +1775,16 @@ def _extract(doc: fitz.Document) -> Extraction:
             f.view = t.view
 
     _assign_critical(all_features, cc_flags, _cc_table_refs(all_tables), pages)
+
+    # Cross-check: every datum referenced by a feature control frame is defined exactly once
+    referenced = {d for f in all_features if f.kind == "fcf" for d in f.datums}
+    defined: dict[str, int] = {}
+    for f in all_features:
+        if f.kind == "datum":
+            defined[f.text] = defined.get(f.text, 0) + 1
+    for d in sorted(referenced):
+        if defined.get(d, 0) != 1:
+            _LOG.warning("TVS extractor: datum %s referenced by an FCF is defined %d times", d, defined.get(d, 0))
 
     all_notes.sort(key=lambda n: (n.sheet, n.rect.y0, n.rect.x0))
     return Extraction(all_features, all_notes, len(pages), [p.rect for p in pages])
