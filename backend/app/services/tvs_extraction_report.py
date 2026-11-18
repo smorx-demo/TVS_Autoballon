@@ -842,8 +842,8 @@ def _scope_coverage(features: list[dict], notes: list[dict]) -> list[tuple[str, 
         ("R radius symbol", ids(lambda f: ftype(f) == "Radius")),
         ("° angle symbol", ids(lambda f: "°" in txt(f) and not is_gdt(f))),
         ("Inclined / rotated / non-aligned dimensions & annotations",
-         ids(lambda f: "angle" not in ftype(f).lower() and (
-             ftype(f).startswith("Inclined") or bool(re.search(r"Rotated|Inclined", str(f["Notes"] or "")))))),
+         ids(lambda f: not re.search(r"angle|angular", ftype(f).lower()) and (
+             ftype(f).startswith("Inclined") or bool(re.search(r"Rotated|Inclined|rotated", str(f["Notes"] or "")))))),
         ("Unilateral tolerances", ids(unilateral)),
         ("Bilateral tolerances (equal or unequal)", ids(lambda f: toleranced_dim(f) and not unilateral(f))),
         ("GD&T feature control frames", ids(is_gdt)),

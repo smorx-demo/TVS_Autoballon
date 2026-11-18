@@ -98,8 +98,10 @@ def test_workbook_layout(tmp_path):
     assert set(rows) == {"S1-001", "S1-002", "S2-001"}
     r1 = rows["S1-001"]
     assert r1[6:13] == ("Diameter", "Ø", 120, 0.2, -0.2, 120.2, 119.8)
-    assert r1[3] == pytest.approx((200 + 25) * 25.4 / 72, abs=0.1)  # X mm from left
-    assert r1[4] == pytest.approx((841.89 - 296.5) * 25.4 / 72, abs=0.1)  # Y mm from bottom
+    # Coordinates = centre of the annotation text as drawn (mm from the lower-left corner)
+    text_rect = fitz.open(pdf)[0].search_for("Ø120 ±0.2")[0]
+    assert r1[3] == pytest.approx((text_rect.x0 + text_rect.x1) / 2 * 25.4 / 72, abs=0.3)
+    assert r1[4] == pytest.approx((841.89 - (text_rect.y0 + text_rect.y1) / 2) * 25.4 / 72, abs=0.3)
     assert r1[5] == "Front view"
     assert rows["S1-002"][18] == "CC5"  # critical tag next to the dimension
     assert rows["S1-002"][13] == "Unilateral (minus) tolerance"

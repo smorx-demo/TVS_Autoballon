@@ -821,6 +821,9 @@ def detect_surface(pd: PageData, sheet: int, exclude: list[fitz.Rect]) -> list[F
         ln.used = True
         f = Feature(sheet, rect, "Surface finish", text, symbol=symbol, nominal=nominal, upper=upper, lower=lower,
                     details=[det], kind="surface", notes=["Upper/Lower columns = roughness limits in µm"])
+        if not ln.horizontal:
+            ang = math.degrees(math.atan2(-ln.dir[1], ln.dir[0])) % 360
+            f.notes.append("Symbol rotated 90°" if abs(abs(ang % 180) - 90) < 3 else f"Symbol rotated {ang % 180:.0f}°")
         out.append(f)
     return out
 
@@ -867,15 +870,17 @@ def detect_threads(pd: PageData, sheet: int, exclude: list[fitz.Rect]) -> list[F
             bits[0] += " coarse" if _iso_coarse_pitch(float(d.replace(",", "."))) == float(m.group("p").replace(",", ".")) else " fine"
         if m.group("cls"):
             bits.append(m.group("cls"))
-        depths = re.findall(r"↧\s*(\d+(?:[.,]\d+)?)", parts[0])
+        depths = re.findall(r"↧\s*(\d+(?:[.,]\d+)?)|[×xX]?\s*(\d+(?:[.,]\d+)?)\s*DEEP", parts[0], re.I)
+        depths = [a or b for a, b in depths]
         if depths:
             bits.append(f"thread depth {depths[0]}")
         if re.search(r"\bTHRU\b", full, re.I):
             bits.append("through")
         for extra in parts[1:]:
-            dm = re.match(r"^Ø\s*(\d+(?:[.,]\d+)?)\s*(?:↧\s*(\d+(?:[.,]\d+)?))?", extra)
+            dm = re.match(r"^Ø\s*(\d+(?:[.,]\d+)?)\s*(?:↧\s*(\d+(?:[.,]\d+)?)|[×xX]?\s*(\d+(?:[.,]\d+)?)\s*DEEP)?", extra, re.I)
             if dm:
-                bits.append(f"tap drill Ø{dm.group(1)}" + (f" depth {dm.group(2)}" if dm.group(2) else ""))
+                dd = dm.group(2) or dm.group(3)
+                bits.append(f"tap drill Ø{dm.group(1)}" + (f" depth {dd}" if dd else ""))
             cm = re.search(r"CSK\s*Ø?\s*(\d+(?:[.,]\d+)?)\s*[×xX]\s*(\d+(?:[.,]\d+)?)\s*°", extra)
             if cm:
                 bits.append(f"CSK Ø{cm.group(1)}×{cm.group(2)}°")
@@ -885,9 +890,9 @@ def detect_threads(pd: PageData, sheet: int, exclude: list[fitz.Rect]) -> list[F
         if depths:
             f.meta["thread_depth"] = _f(depths[0])
         for extra in parts[1:]:
-            dm = re.match(r"^Ø\s*(\d+(?:[.,]\d+)?)\s*↧\s*(\d+(?:[.,]\d+)?)", extra)
+            dm = re.match(r"^Ø\s*(\d+(?:[.,]\d+)?)\s*(?:↧\s*(\d+(?:[.,]\d+)?)|[×xX]?\s*(\d+(?:[.,]\d+)?)\s*DEEP)", extra, re.I)
             if dm:
-                f.meta["drill"] = (_f(dm.group(1)), _f(dm.group(2)))
+                f.meta["drill"] = (_f(dm.group(1)), _f(dm.group(2) or dm.group(3)))
             cm = re.search(r"CSK\s*Ø?\s*(\d+(?:[.,]\d+)?)\s*[×xX]\s*(\d+(?:[.,]\d+)?)\s*°", extra)
             if cm:
                 f.meta["csk"] = (_f(cm.group(1)), _f(cm.group(2)))
