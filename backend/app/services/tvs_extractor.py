@@ -723,7 +723,7 @@ def detect_datum_features(pd: PageData, sheet: int, exclude: list[fitz.Rect]) ->
             continue
         ln.used = True
         out.append(Feature(sheet, fitz.Rect(ln.rect), "Datum feature", ln.text, nominal=ln.text, kind="datum",
-                           details=[f"Datum {ln.text}"], meta={"box": box}))
+                           details=[f"Datum {ln.text}"], meta={"box": box, "tri": fitz.Rect(tri.rect)}))
     return out
 
 
@@ -1260,13 +1260,16 @@ def _view_regions(pd: PageData, frame: fitz.Rect, labels: list[ViewLabel], block
                     grown.add((i + di, j + dj))
     seen: set[tuple[int, int]] = set()
     comps: list[fitz.Rect] = []
+    comp_cells: list[set[tuple[int, int]]] = []
     for start in grown:
         if start in seen:
             continue
         stack, x0, x1, y0, y1, n = [start], start[0], start[0], start[1], start[1], 0
         seen.add(start)
+        cells_here: set[tuple[int, int]] = set()
         while stack:
             i, j = stack.pop()
+            cells_here.add((i, j))
             n += 1
             x0, x1, y0, y1 = min(x0, i), max(x1, i), min(y0, j), max(y1, j)
             for nb in ((i + 1, j), (i - 1, j), (i, j + 1), (i, j - 1)):
@@ -1276,8 +1279,13 @@ def _view_regions(pd: PageData, frame: fitz.Rect, labels: list[ViewLabel], block
         if n >= 150:
             comps.append(fitz.Rect(pd.rect.x0 + x0 * cell, pd.rect.y0 + y0 * cell,
                                    pd.rect.x0 + (x1 + 1) * cell, pd.rect.y0 + (y1 + 1) * cell))
+            comp_cells.append(cells_here)
     names = _assign_labels([(l.name, l.rect) for l in labels], comps)
-    return [(comp, names.get(k, "")) for k, comp in enumerate(comps)]
+    _CELLS[id(pd)] = (cell, pd.rect.x0, pd.rect.y0)
+    return [(comp, names.get(k, ""), comp_cells[k]) for k, comp in enumerate(comps)]
+
+
+_CELLS: dict[int, tuple[float, float, float]] = {}
 
 
 def _label_cost(label: fitz.Rect, comp: fitz.Rect) -> float:
@@ -1314,9 +1322,15 @@ def _assign_labels(views: list[tuple[str, fitz.Rect]], comps: list[fitz.Rect], m
     return {k: views[i][0] for i, k in enumerate(best["pick"]) if k is not None}
 
 
-def _view_for(regions: list[tuple[fitz.Rect, str]], labels: list[ViewLabel], p: fitz.Point) -> str:
+def _view_for(regions: list, labels: list[ViewLabel], p: fitz.Point, grid: tuple | None = None) -> str:
+    if grid is not None:
+        cell, ox, oy = grid
+        key = (int((p.x - ox) / cell), int((p.y - oy) / cell))
+        for comp, name, cells in regions:
+            if name and key in cells:
+                return name
     best, best_d = "", 1e18
-    for comp, name in regions:
+    for comp, name, _cells in regions:
         if not name:
             continue
         if comp.contains(p):
@@ -1441,6 +1455,7 @@ def _extract(doc: fitz.Document) -> Extraction:
     callouts_by_sheet: dict[int, list] = {}
     regions_by_sheet: dict[int, list] = {}
     notes_region: dict[int, fitz.Rect | None] = {}
+    grids_by_sheet: dict[int, tuple | None] = {}
 
     for pd in pages:
         sheet = pd.index + 1
@@ -1508,6 +1523,7 @@ def _extract(doc: fitz.Document) -> Extraction:
 
         blocked = excl + [l.rect for l in labels]
         regions_by_sheet[sheet] = _view_regions(pd, frame, labels, blocked)
+        grids_by_sheet[sheet] = _CELLS.pop(id(pd), None)
 
     # ---- views
     for f in all_features:
@@ -1517,7 +1533,8 @@ def _extract(doc: fitz.Document) -> Extraction:
         if nreg is not None and (nreg + (-20, -20, 20, 60)).contains(f.center):
             f.view = "General notes"
             continue
-        f.view = _view_for(regions_by_sheet.get(f.sheet, []), labels_by_sheet.get(f.sheet, []), f.center)
+        f.view = _view_for(regions_by_sheet.get(f.sheet, []), labels_by_sheet.get(f.sheet, []), f.center,
+                           grids_by_sheet.get(f.sheet))
 
     # ---- callout reference notes
     label_index = {(l.name.upper()): (s, l) for s, ls in labels_by_sheet.items() for l in ls}
@@ -1556,13 +1573,14 @@ def _seg_near(p: fitz.Point, s: Seg, tol: float) -> bool:
     return math.hypot(p.x - (s.a.x + t * vx), p.y - (s.a.y + t * vy)) <= tol
 
 
-def _leader_end(pd: PageData, rect: fitz.Rect) -> fitz.Point | None:
-    """Far end of the leader line leaving a text block (follows connected segments)."""
+def _leader(pd: PageData, rect: fitz.Rect) -> tuple[fitz.Point | None, list[Seg]]:
+    """Tip of the leader leaving a text block (follows joined segments; arrowhead tip if any)."""
     area = rect + (-4, -4, 4, 4)
     start = [s for s in pd.segs if not s.dashed and (area.contains(s.a) or area.contains(s.b)) and s.length > 6
              and not (rect.contains(s.a) and rect.contains(s.b))]
-    best, best_d = None, 0.0
+    best, best_d, best_chain = None, 0.0, []
     for s in start:
+        chain = [s]
         cur = s.b if area.contains(s.a) else s.a
         for _ in range(4):
             nxt = next((o for o in pd.segs if o is not s and not o.dashed and o.length > 3
@@ -1571,10 +1589,21 @@ def _leader_end(pd: PageData, rect: fitz.Rect) -> fitz.Point | None:
                 break
             cur = nxt.b if _close(nxt.a, cur, 1.2) else nxt.a
             s = nxt
+            chain.append(s)
         d = math.hypot(cur.x - (rect.x0 + rect.x1) / 2, cur.y - (rect.y0 + rect.y1) / 2)
         if d > best_d:
-            best, best_d = cur, d
-    return best
+            best, best_d, best_chain = cur, d, chain
+    if best is not None:
+        c = fitz.Point((rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2)
+        for a in pd.arrowheads():
+            if math.hypot(a.center.x - best.x, a.center.y - best.y) < 8:
+                best = max(a.pts, key=lambda q: math.hypot(q.x - c.x, q.y - c.y))
+                break
+    return best, best_chain
+
+
+def _leader_end(pd: PageData, rect: fitz.Rect) -> fitz.Point | None:
+    return _leader(pd, rect)[0]
 
 
 def _link_hole_patterns(pages: list[PageData], feats: list[Feature], labels: dict[int, list[ViewLabel]]) -> None:
@@ -1582,8 +1611,6 @@ def _link_hole_patterns(pages: list[PageData], feats: list[Feature], labels: dic
     for pd in pages:
         sheet = pd.index + 1
         pcds = [c for c in pd.curves if c.dashed and c.radius > 15]
-        if not pcds:
-            continue
         # merge dashed arcs belonging to the same circle
         circles: list[tuple[fitz.Point, float]] = []
         for c in pcds:
@@ -1608,7 +1635,8 @@ def _link_hole_patterns(pages: list[PageData], feats: list[Feature], labels: dic
             end = _leader_end(pd, t.rect)
             if end is None:
                 continue
-            hole = next((h for h in holes if math.hypot(h.center.x - end.x, h.center.y - end.y) <= h.radius + 3), None)
+            hole = min((h for h in holes if math.hypot(h.center.x - end.x, h.center.y - end.y) <= h.radius + 3),
+                       key=lambda h: -h.radius, default=None)
             if hole is None:
                 continue
             for p in pcd_feats:
@@ -1617,10 +1645,17 @@ def _link_hole_patterns(pages: list[PageData], feats: list[Feature], labels: dic
                     qty = t.meta.get("qty") or 1
                     t.details[0] += f"; {qty} holes on PCD Ø{_fmt(p.nominal)}"
                     p.details = [f"Pitch circle of {qty}× M{t.meta['size']}; theoretically exact"]
+        # Datum feature whose triangle sits on a hole callout's leader = that hole's axis
+        for t in [f for f in feats if f.sheet == sheet and f.kind == "thread"]:
+            _tip, chain = _leader(pd, t.rect)
+            for dfe in [f for f in feats if f.sheet == sheet and f.kind == "datum" and f.meta.get("tri") is not None]:
+                tri = dfe.meta["tri"] + (-2, -2, 2, 2)
+                if any(_seg_near(fitz.Point((tri.x0 + tri.x1) / 2, (tri.y0 + tri.y1) / 2), s, 6.0) for s in chain):
+                    dfe.details = [f"Datum {dfe.text} = axis of M{t.meta['size']} hole"]
         # FCF placed directly under a hole callout applies to it
         for g in [f for f in feats if f.sheet == sheet and f.kind == "fcf"]:
             t = next((t for t in feats if t.sheet == sheet and t.kind == "thread"
-                      and 0 <= g.rect.y0 - t.rect.y1 <= 8 and abs(g.rect.x0 - t.rect.x0) < 40), None)
+                      and -2 <= g.rect.y0 - t.rect.y1 <= 8 and abs(g.rect.x0 - t.rect.x0) < 40), None)
             if t is not None:
                 qty = t.meta.get("qty")
                 g.details[0] += f"; applies to {str(qty) + '× ' if qty else ''}M{t.meta['size']}"
@@ -1685,11 +1720,44 @@ def _surface_host(pd: PageData, f: Feature, dims: list[Feature]) -> Feature | No
     # supporting segment through the tip (not the symbol itself)
     support = [s for s in pd.segs if s.pid not in sym_pids and s.length > 20 and _seg_near(tip, s, 1.5)]
     arrows = pd.arrowheads()
+    best, best_d = None, 1e9
     for s in support:
-        # follow to the end of the support line; a dimension line crossing near it owns the surface
-        for end in (s.a, s.b):
-            for d in dims:
-                dl = _dimension_line(pd, d.rect, arrows)
-                if dl is not None and _seg_near(end, dl, 3.0):
-                    return d
-    return None
+        # the dimension whose dimension line meets this extension/leader line owns the surface
+        for d in dims:
+            dl = _dimension_line(pd, d.rect, arrows)
+            if dl is None or dl is s:
+                continue
+            touch = (_seg_near(dl.a, s, 2.0) or _seg_near(dl.b, s, 2.0)
+                     or _seg_near(s.a, dl, 2.0) or _seg_near(s.b, dl, 2.0))
+            if touch:
+                dd = math.hypot(d.center.x - tip.x, d.center.y - tip.y)
+                if dd < best_d:
+                    best, best_d = d, dd
+    if best is not None:
+        return best
+    # Symbol on a leader: follow it to the surface it points at, then find the dimension whose
+    # extension line is collinear with that point (same surface edge).
+    lead = [s for s in pd.segs if s.pid not in sym_pids and s.length > 10 and (_close(s.a, tip, 1.5) or _close(s.b, tip, 1.5))]
+    for s in lead:
+        end = s.b if _close(s.a, tip, 1.5) else s.a
+        for a in arrows:
+            if math.hypot(a.center.x - end.x, a.center.y - end.y) < 8:
+                end = max(a.pts, key=lambda q: math.hypot(q.x - tip.x, q.y - tip.y))
+        for d in dims:
+            dl = _dimension_line(pd, d.rect, arrows)
+            if dl is None:
+                continue
+            for e in (dl.a, dl.b):
+                for horiz in (True, False):
+                    if horiz and abs(e.y - end.y) > 1.5 or not horiz and abs(e.x - end.x) > 1.5:
+                        continue
+                    # an extension line along that edge must bridge the two points
+                    for x in pd.segs:
+                        if (x.is_h if horiz else x.is_v) and abs((x.a.y if horiz else x.a.x) - (e.y if horiz else e.x)) <= 1.5:
+                            lo_, hi_ = sorted(((x.a.x, x.b.x) if horiz else (x.a.y, x.b.y)))
+                            pe, pn = (e.x, end.x) if horiz else (e.y, end.y)
+                            if lo_ - 3 <= pe <= hi_ + 3 and min(abs(pn - lo_), abs(pn - hi_), 0 if lo_ <= pn <= hi_ else 1e9) <= 25:
+                                dd = math.hypot(d.center.x - end.x, d.center.y - end.y)
+                                if dd < best_d:
+                                    best, best_d = d, dd
+    return best
