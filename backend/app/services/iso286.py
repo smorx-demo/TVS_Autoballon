@@ -127,8 +127,8 @@ def _hole(letter: str, grade: int, size: float) -> tuple[float, float] | None:
             es = -ei_shaft + (it - prev)
         else:
             es = -ei_shaft
-        if lo == "k" and grade > 8:
-            es = 0.0
+        if lo in ("k", "n") and grade > 8:
+            es = 0.0  # ISO 286-1: K and N above IT8 have ES = 0
         return es, es - it
     return None
 
@@ -159,3 +159,14 @@ def parse_fit(code: str) -> tuple[str, int] | None:
     if not 1 <= g <= 18:
         return None
     return m.group(1), g
+
+
+def equivalent_classes(size: float, upper: float, lower: float, grades=range(5, 13)) -> list[str]:
+    """Standard tolerance classes whose limits equal the printed deviations (e.g. 8 0/-0.036 -> N9, h9)."""
+    out = []
+    for letter in ("H", "JS", "K", "M", "N", "P", "G", "F", "E", "D", "h", "js", "k", "m", "n", "p", "g", "f", "e", "d"):
+        for g in grades:
+            lim = limits(letter, g, size)
+            if lim and abs(lim[0] - upper) < 1e-9 and abs(lim[1] - lower) < 1e-9:
+                out.append(f"{letter}{g}")
+    return out
