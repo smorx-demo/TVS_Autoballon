@@ -80,12 +80,13 @@ class Sheet:
         doc.new_page(width=W, height=H)
         self.doc = doc
         self.no = no
+        self._idx = doc.page_count - 1
         self.shape = _Shape(self)
         self.boxes: list[fitz.Rect] = []   # annotation areas (keep background marks away)
 
     @property
     def page(self) -> fitz.Page:
-        return self.doc[self.no - 1]
+        return self.doc[self._idx]
 
     def text(self, p, s, size=9.5, rotate=0, morph=None):
         self.page.insert_text(p, s, fontname=FONT, fontsize=size, rotate=rotate, morph=morph)
@@ -158,7 +159,7 @@ def _row(sheet, rect, view, ftype, text, symbol=None, nominal=None, upper=None, 
         ("Lower tolerance", lower), ("Max limit", mx), ("Min limit", mn),
         ("Fit / thread / finish / GD&T details (incl. datums)", details), ("Primary datum", d[0]),
         ("Secondary datum", d[1]), ("Tertiary datum", d[2]), ("Boxed / reference flag", flag), ("Critical flag", critical),
-        ("Notes", notes), ("Text as shown on drawing", text), ("_rect", fitz.Rect(rect)),
+        ("Notes", notes), ("Text as shown on drawing", text), ("_rect", fitz.Rect(rect)), ("_zone_rect", fitz.Rect(rect)),
     ])
 
 
@@ -188,7 +189,23 @@ def fmt(v: float) -> str:
 # drawing
 # =============================================================================
 
+def _near_zone_boundary(r: fitz.Rect, tol: float = 2.5) -> bool:
+    c = fitz.Point((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2)
+    xs = [FRAME.x0 + k * FRAME.width / COLS for k in range(1, COLS)]
+    ys = [FRAME.y0 + k * FRAME.height / ROWS for k in range(1, ROWS)]
+    return any(abs(c.x - x) < tol for x in xs) or any(abs(c.y - y) < tol for y in ys)
+
+
 def make_drawing(seed: int, pdf_path: Path, key_path: Path) -> dict:
+    """Generate a drawing whose annotation centres are never ambiguous between two zones."""
+    for shift in (0, 7, 14, 21, 28):
+        info = _make_drawing(seed, pdf_path, key_path, shift)
+        if not info.pop("ambiguous"):
+            return info
+    return info
+
+
+def _make_drawing(seed: int, pdf_path: Path, key_path: Path, shift: float) -> dict:
     rng = random.Random(seed)
     n_sheets = 1 + seed % 3
     doc = fitz.open()
@@ -215,7 +232,7 @@ def make_drawing(seed: int, pdf_path: Path, key_path: Path) -> dict:
             notes.append((sh.no, "Revision table", f"Revision {rv[0]}", " | ".join(rv)))
         notes.append((sh.no, "Title block", "Title block", " | ".join(sh._title)))
         last = sh.no == n_sheets
-        boxes = [fitz.Rect(90, 117, 420, 597), fitz.Rect(450, 117, 790, 597)]
+        boxes = [fitz.Rect(90, 117 + shift, 420, 597 + shift), fitz.Rect(450, 117 + shift, 790, 597 + shift)]
         for vbox in boxes:
             label = view_names.pop()
             vname = _view_name(label)
@@ -227,7 +244,25 @@ def make_drawing(seed: int, pdf_path: Path, key_path: Path) -> dict:
             kinds = ["lin_pm", "stack", "dia_pm", "fit_print", "fit_bare", "radius", "angle", "chamfer",
                      "basic", "ref", "fcf", "datum", "surface", "thread", "inclined"]
             rng.shuffle(kinds)
-            for kind, slot in zip(kinds[: rng.randint(9, 12)], slots):
+            free = list(slots)
+            for kind in kinds[: rng.randint(9, 12)]:
+                slot = None
+                for cand in free:
+                    # Dry run on a scratch page: skip slots whose annotation centre would sit
+                    # on a zone boundary (zone ambiguous by construction).
+                    st, uv = rng.getstate(), set(used_vals)
+                    scratch = Sheet(fitz.open(), 1)
+                    scratch.no = sh.no
+                    trial = _place(scratch, kind, cand, vname, rng, uniq)
+                    rng.setstate(st)
+                    used_vals.clear()
+                    used_vals.update(uv)
+                    if trial is not None and not _near_zone_boundary(trial["_zone_rect"]):
+                        slot = cand
+                        break
+                if slot is None:
+                    continue
+                free.remove(slot)
                 row = _place(sh, kind, slot, vname, rng, uniq)
                 if row is None:
                     continue
@@ -255,7 +290,8 @@ def make_drawing(seed: int, pdf_path: Path, key_path: Path) -> dict:
     doc.save(str(pdf_path))
     doc.close()
     _write_key(rows, notes, key_path)
-    return {"sheets": n_sheets, "features": len(rows), "notes": len(notes)}
+    return {"sheets": n_sheets, "features": len(rows), "notes": len(notes),
+            "ambiguous": any(_near_zone_boundary(r["_zone_rect"]) for r in rows)}
 
 
 def _view_name(label: str) -> str:
