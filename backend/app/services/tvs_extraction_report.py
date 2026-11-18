@@ -822,47 +822,144 @@ def _scope_coverage(features: list[dict], notes: list[dict]) -> list[tuple[str, 
     def ftype(f) -> str:
         return str(f["Feature type"])
 
+    def is_gdt(f) -> bool:
+        return ftype(f).startswith("GD&T")
+
+    def lims(f):
+        return _num(f["Upper tolerance"]), _num(f["Lower tolerance"])
+
+    def toleranced_dim(f) -> bool:
+        return f["_toleranced"] and not ftype(f).startswith(("Surface", "GD&T"))
+
+    def unilateral(f) -> bool:
+        hi, lo = lims(f)
+        return toleranced_dim(f) and (hi == 0 or lo == 0)
+
+    max_sheet = max((int(f["Sheet"]) for f in features), default=1)
     return [
-        ("Dimensions with tolerances", ids(lambda f: f["_toleranced"] and not ftype(f).startswith(("Surface", "GD&T")))),
-        ("Ø diameter symbol", ids(lambda f: "Ø" in txt(f))),
-        ("R radius symbol", ids(lambda f: bool(re.search(r"(?:^|[\s×x])S?R\s*\d", txt(f))))),
-        ("° angle symbol", ids(lambda f: "°" in txt(f))),
+        ("Dimensions with tolerances", ids(toleranced_dim)),
+        ("Ø diameter symbol", ids(lambda f: "Ø" in txt(f) and not is_gdt(f))),
+        ("R radius symbol", ids(lambda f: ftype(f) == "Radius")),
+        ("° angle symbol", ids(lambda f: "°" in txt(f) and not is_gdt(f))),
         ("Inclined / rotated / non-aligned dimensions & annotations",
-         ids(lambda f: bool(re.search(r"Rotated|Inclined", str(f["Notes"] or ""))))),
-        ("Unilateral tolerances", ids(lambda f: f["_tol_kind"].startswith("Unilateral"))),
-        ("Bilateral tolerances (equal or unequal)",
-         ids(lambda f: f["_tol_kind"] in {"Bilateral equal tolerance", "Unequal bilateral tolerance"})),
-        ("GD&T feature control frames", ids(lambda f: ftype(f).startswith("GD&T"))),
-        ("FCFs with primary + secondary + tertiary datums", ids(lambda f: bool(f["Tertiary datum"]))),
+         ids(lambda f: "angle" not in ftype(f).lower() and (
+             ftype(f).startswith("Inclined") or bool(re.search(r"Rotated|Inclined", str(f["Notes"] or "")))))),
+        ("Unilateral tolerances", ids(unilateral)),
+        ("Bilateral tolerances (equal or unequal)", ids(lambda f: toleranced_dim(f) and not unilateral(f))),
+        ("GD&T feature control frames", ids(is_gdt)),
+        ("FCFs with primary + secondary + tertiary datums", ids(lambda f: is_gdt(f) and bool(f["Tertiary datum"]))),
+        ("Datum features", ids(lambda f: ftype(f) == "Datum feature")),
         ("Surface finish (N6/N7/N8/Ra/Rz)", ids(lambda f: ftype(f) == "Surface finish")),
         ("Threads M6 / M8 / M10 with pitch and depth", ids(lambda f: ftype(f) == "Thread")),
         ("Fits H7 / h6 / g6 / p7", ids(lambda f: ftype(f).startswith("Fit"))),
         ("Chamfers (size × angle)", ids(lambda f: ftype(f) == "Chamfer")),
         ("Boxed (basic) dimensions", ids(lambda f: f["Boxed / reference flag"] == "Boxed (basic)")),
         ("Bracketed (reference) dimensions", ids(lambda f: f["Boxed / reference flag"] == "Bracketed (reference)")),
-        ("Annotations near border / title block", ids(lambda f: "border" in str(f["Notes"] or ""))),
+        ("Annotations near border / title block", ids(lambda f: bool(re.search(r"near .*(border|title block)", str(f["Notes"] or ""))))),
         ("Critical characteristics (CC)", ids(lambda f: f["Critical flag"] not in {"-", "", None})),
-        ("Items on sheet 2+ (multi-sheet mapping)", ids(lambda f: int(f["Sheet"]) > 1)),
+        (f"Items on sheet {'2' if max_sheet <= 2 else '2+'} (multi-sheet mapping)", ids(lambda f: int(f["Sheet"]) > 1)),
     ]
 
 
-def build_tvs_extraction_xlsx(meta: dict, src_pdf: Path, report_rows: list[dict] | None = None,
-                              balloons: list[dict] | None = None) -> bytes:
-    from app.services.border_grid import zone_references_for_balloons
+def _extraction_rows(src_pdf: Path, sheets: set[int] | None = None,
+                     area: tuple[int, fitz.Rect] | None = None) -> tuple[list[dict], list[dict], int, str]:
+    """Run the drawing extractor and shape its output into report rows."""
+    from app.services.tvs_extractor import PT_TO_MM as _MM, extract_drawing
 
-    balloons = list(balloons if balloons is not None else (meta.get("balloons") or []))
+    ext = extract_drawing(src_pdf)
     doc = fitz.open(str(src_pdf))
     try:
-        zones = zone_references_for_balloons(src_pdf, balloons)
-        features = build_feature_rows(doc, balloons, report_rows, zones)
-        notes = build_note_rows(doc, {str(b.get("text") or "") for b in balloons})
-        sheet_count = doc.page_count
+        ctxs = {i + 1: _PageCtx(doc[i], i + 1) for i in range(doc.page_count)}
+        title_rects: dict[int, list[fitz.Rect]] = {}
+        for n in ext.notes:
+            if n.kind == "Title block":
+                title_rects.setdefault(n.sheet, []).append(n.rect)
+
+        def keep(sheet: int, rect: fitz.Rect) -> bool:
+            if sheets and sheet not in sheets:
+                return False
+            if area and (area[0] != sheet or not area[1].contains((rect.tl + rect.br) / 2)):
+                return False
+            return True
+
+        feats = [f for f in ext.features if keep(f.sheet, f.rect)]
+        feats.sort(key=lambda f: (f.sheet, -round(f.center.y / 40), f.center.x))
+        per_sheet: Counter = Counter()
+        rows: list[dict] = []
+        for f in feats:
+            ctx = ctxs[f.sheet]
+            c = f.center
+            per_sheet[f.sheet] += 1
+            nom = f.nominal if isinstance(f.nominal, (int, float)) else None
+            max_lim = min_lim = None
+            if f.toleranced and nom is not None and f.kind == "dim":
+                max_lim = nom + (f.upper or 0.0)
+                min_lim = nom + (f.lower or 0.0)
+            notes = list(f.notes)
+            near = ctx.near_border(c.x, c.y)
+            if near:
+                notes.append(near)
+            for tr in title_rects.get(f.sheet, []):
+                if _rect_gap(f.rect, tr) < 25:
+                    notes.append("Placed near title block")
+            datums = (list(f.datums) + ["", "", ""])[:3]
+            lo, hi = f.lower, f.upper
+            rows.append(OrderedDict([
+                ("Feature ID", f"S{f.sheet}-{per_sheet[f.sheet]:03d}"),
+                ("Sheet", f.sheet),
+                ("Zone", ctx.zone(c.x, c.y)),
+                ("X (mm)", round((c.x - ctx.rect.x0) * _MM, 1)),
+                ("Y (mm)", round((ctx.rect.y1 - c.y) * _MM, 1)),
+                ("View", f.view),
+                ("Feature type", f.ftype),
+                ("Symbol", f.symbol or None),
+                ("Nominal", _cell_num(f.nominal) if isinstance(f.nominal, (int, float)) else f.nominal),
+                ("Upper tolerance", _cell_num(hi)),
+                ("Lower tolerance", _cell_num(lo)),
+                ("Max limit", _cell_num(max_lim)),
+                ("Min limit", _cell_num(min_lim)),
+                ("Fit / thread / finish / GD&T details (incl. datums)", "; ".join(d for d in f.details if d) or None),
+                ("Primary datum", datums[0] or None),
+                ("Secondary datum", datums[1] or None),
+                ("Tertiary datum", datums[2] or None),
+                ("Boxed / reference flag", f.flag),
+                ("Critical flag", f.critical),
+                ("Notes", "; ".join(dict.fromkeys(notes)) or None),
+                ("Text as shown on drawing", f.text),
+                ("_toleranced", f.toleranced and f.kind == "dim"),
+                ("_tol_kind", _tol_kind(lo, hi) if f.kind == "dim" else ""),
+            ]))
+        note_rows = []
+        for n in ext.notes:
+            if not keep(n.sheet, n.rect):
+                continue
+            c = (n.rect.tl + n.rect.br) / 2
+            note_rows.append({"sheet": n.sheet, "zone": ctxs[n.sheet].zone(c.x, c.y), "view": n.view,
+                              "type": n.kind, "text": n.text})
         size = ""
         if doc.page_count:
             r = doc[0].rect
             size = f"{round(r.width * PT_TO_MM)} x {round(r.height * PT_TO_MM)} mm"
+        return rows, note_rows, doc.page_count, size
     finally:
         doc.close()
+
+
+def _rect_gap(a: fitz.Rect, b: fitz.Rect) -> float:
+    dx = max(a.x0 - b.x1, 0, b.x0 - a.x1)
+    dy = max(a.y0 - b.y1, 0, b.y0 - a.y1)
+    return math.hypot(dx, dy)
+
+
+def build_tvs_extraction_xlsx(meta: dict, src_pdf: Path, report_rows: list[dict] | None = None,
+                              balloons: list[dict] | None = None, *, page: int | None = None,
+                              area: tuple[int, fitz.Rect] | None = None) -> bytes:
+    """
+    TVS extraction report for a drawing. Features and notes come from the drawing extractor
+    (tvs_extractor); `page` / `area` restrict the report to one sheet or a work area.
+    `report_rows` / `balloons` are accepted for API compatibility and are not used.
+    """
+    features, notes, sheet_count, size = _extraction_rows(Path(src_pdf), {page} if page else None, area)
 
     wb = Workbook()
     # --- Summary ---
@@ -877,11 +974,11 @@ def build_tvs_extraction_xlsx(meta: dict, src_pdf: Path, report_rows: list[dict]
             f"rev {meta.get('revision')}" if meta.get("revision") else "",
             f"- {meta.get('part_name')}" if meta.get("part_name") else "",
         ] if p
-    ) or f"Drawing {((meta.get('files') or [{}])[0]).get('name', '')}"
+    ) or f"Drawing {((meta.get('files') or [{}])[0]).get('name', '') or Path(src_pdf).stem}"
     ws.append(["TVS extraction report"])
     ws["A1"].font = Font(bold=True, size=14)
     ws.append([f"{ident}, {sheet_count} sheet(s){', ' + size if size else ''}."])
-    ws.append(["Coordinates: mm from the lower-left corner of the sheet, at the centre of the annotation text. "
+    ws.append(["Coordinates: mm from the lower-left corner of the sheet, at the centre of the annotation. "
                "Zones: sheet border grid (letter row + number column)."])
     ws.append([])
     ws.append(["Features by type"])
@@ -903,7 +1000,7 @@ def build_tvs_extraction_xlsx(meta: dict, src_pdf: Path, report_rows: list[dict]
         ws.append([sheet, n])
     ws.append(["Notes / text items (Notes tab)", len(notes)])
     ws.append([])
-    ws.append(["Scope coverage"])
+    ws.append(["Scope coverage (from the scope document)"])
     ws.cell(row=ws.max_row, column=1).font = Font(bold=True)
     ws.append(["Scope item", "Count", "Feature IDs"])
     for c in ws[ws.max_row][:3]:
@@ -943,9 +1040,4 @@ def build_tvs_extraction_xlsx(meta: dict, src_pdf: Path, report_rows: list[dict]
 
 def build_tvs_extraction_from_pdf(src_pdf: Path, meta: dict | None = None) -> bytes:
     """End-to-end: drawing PDF → TVS extraction report bytes (used by the evaluator / CLI)."""
-    from app.services.autoballoon_engine import balloon_pdf
-
-    src_pdf = Path(src_pdf)
-    _out, chars, _log, _ext = balloon_pdf(src_pdf.read_bytes())
-    balloons = [c.__dict__ if hasattr(c, "__dict__") else dict(c) for c in chars]
-    return build_tvs_extraction_xlsx(meta or {}, src_pdf, None, balloons)
+    return build_tvs_extraction_xlsx(meta or {}, Path(src_pdf))

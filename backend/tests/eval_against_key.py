@@ -333,8 +333,12 @@ def evaluate(output_src, key_src) -> dict:
     # summary
     summary_diff = []
     ks, os_ = key["summary"], out["summary"]
+    def _sec_key(s: str) -> str:
+        # Section titles may carry a parenthetical source note; compare the title words only.
+        return re.sub(r"\s*\(.*\)\s*$", "", _norm_note(s))
+
     for section, items in ks.items():
-        osec = next((v for s, v in os_.items() if _norm_note(s).startswith(_norm_note(section)[:12])), {})
+        osec = next((v for s, v in os_.items() if _sec_key(s) == _sec_key(section)), {})
         for label, n in items.items():
             got = osec.get(label)
             if got != n:
