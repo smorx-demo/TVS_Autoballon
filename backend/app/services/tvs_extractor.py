@@ -103,6 +103,7 @@ class Curve:
     closed: bool
     dashed: bool
     samples: list[fitz.Point] = field(default_factory=list)
+    width: float = 0.0
 
     def circle(self) -> tuple[fitz.Point, float] | None:
         """Circle through first / middle / last sample points (arc geometry)."""
@@ -199,7 +200,8 @@ class PageData:
         for pid, d in enumerate(self.page.get_drawings()):
             dashed = bool(d.get("dashes")) and str(d.get("dashes")).strip() not in ("[] 0", "[]0", "")
             filled = d.get("fill") is not None
-            width = float(d.get("width") or 0.0)
+            # Stroked paths without an explicit width use the PDF default (1.0); fill-only paths have none
+            width = float(d.get("width") or (1.0 if d.get("color") is not None else 0.0))
             items = d.get("items") or []
             lines_only = all(it[0] == "l" for it in items)
             curves_only = all(it[0] == "c" for it in items) and items
@@ -211,7 +213,7 @@ class PageData:
                     p0, p1, p2, p3 = (_pt(q) for q in it[1:5])
                     samples.append(fitz.Point((p0.x + 3 * p1.x + 3 * p2.x + p3.x) / 8, (p0.y + 3 * p1.y + 3 * p2.y + p3.y) / 8))
                     samples.append(p3)
-                self.curves.append(Curve(pid, ends[:-1] if closed else ends, fitz.Rect(d["rect"]), closed, dashed, samples))
+                self.curves.append(Curve(pid, ends[:-1] if closed else ends, fitz.Rect(d["rect"]), closed, dashed, samples, width))
                 continue
             if lines_only and len(items) in (3, 4):
                 pts = [_pt(it[1]) for it in items]
@@ -236,7 +238,7 @@ class PageData:
                     for k in range(4):
                         self.segs.append(Seg(pts[k], pts[(k + 1) % 4], pid, dashed))
                 elif op == "c" and not curves_only:
-                    self.curves.append(Curve(pid, [_pt(it[1]), _pt(it[4])], fitz.Rect(d["rect"]), False, dashed))
+                    self.curves.append(Curve(pid, [_pt(it[1]), _pt(it[4])], fitz.Rect(d["rect"]), False, dashed, width=width))
 
     # -- helpers -----------------------------------------------------------------------
     def words(self) -> list[TLine]:
@@ -249,6 +251,15 @@ class PageData:
                     r = fitz.Rect(x0, y0, x1, y1)
                     self._words.append(TLine(t, r, (1.0, 0.0), r.height, [Span(t, r, r.height, "")], False))
         return self._words
+
+    def thin_width(self) -> float | None:
+        """Most common stroke weight on the sheet (dimension / leader lines)."""
+        if getattr(self, "_thin", "unset") == "unset":
+            from collections import Counter
+
+            c = Counter(round(sg.width, 2) for sg in self.segs if sg.width > 0)
+            self._thin = c.most_common(1)[0][0] if c else None
+        return self._thin
 
     def strokes_in(self, area: fitz.Rect) -> tuple[list[Seg], list[Curve], list[Poly]]:
         segs = [s for s in self.segs if area.contains(s.a) and area.contains(s.b)]
@@ -441,7 +452,8 @@ def _table_kind(rows: list[list[str]]) -> str:
 
 VIEW_RE = re.compile(
     r"^\s*(?:"
-    r"(?P<named>FRONT|TOP|BOTTOM|SIDE|LEFT|RIGHT|REAR|BACK|END|PLAN|ISOMETRIC|AUXILIARY)\s+VIEW"
+    r"(?P<named>MAIN|FRONT|TOP|BOTTOM|SIDE|LEFT|RIGHT|REAR|BACK|END|PLAN|ISOMETRIC|AUXILIARY|PARTIAL|ENLARGED"
+    r"|EXPLODED|SECTIONAL|ELEVATION)\s+VIEW"
     r"|SECTION\s+(?P<sec>[A-Z]{1,2}\s*-\s*[A-Z]{1,2})"
     r"|DETAIL\s+(?P<det>[A-Z]{1,2})\b"
     r"|VIEW\s+(?P<view>[A-Z]{1,2})\b"
@@ -478,9 +490,9 @@ def _view_labels(pd: PageData, frame: fitz.Rect, claimed: list[fitz.Rect]) -> li
             continue
         text, rect = ln.text, fitz.Rect(ln.rect)
         ln.used = True
-        # Continuation line directly below, in parentheses
-        for nx in pd.lines:
-            if nx.used or not nx.text.startswith("("):
+        # Continuation lines directly below: "(…)" qualifiers or a "SCALE n:m" line
+        for nx in sorted(pd.lines, key=lambda l: l.rect.y0):
+            if nx.used or not (nx.text.startswith("(") or re.match(r"^SCALE\s+\d", nx.text, re.I)):
                 continue
             if 0 <= nx.rect.y0 - rect.y1 <= max(6.0, ln.size) and nx.rect.x0 < rect.x1 and nx.rect.x1 > rect.x0:
                 text = f"{text} {nx.text}"
@@ -1375,6 +1387,120 @@ def _assign_labels(views: list[tuple[str, fitz.Rect]], comps: list[fitz.Rect], m
     return {k: views[i][0] for i, k in enumerate(best["pick"]) if k is not None}
 
 
+_LOG = __import__("logging").getLogger("tvs_extractor")
+
+
+def _outline_width(pd: PageData) -> float | None:
+    """Dominant visible-outline line weight: the most used weight clearly heavier than thin lines."""
+    from collections import Counter
+
+    c: Counter = Counter()
+    for sg in pd.segs:
+        if sg.width > 0:
+            c[round(sg.width, 2)] += 1
+    for cv in pd.curves:
+        if cv.width > 0:
+            c[round(cv.width, 2)] += 1
+    if not c:
+        return None
+    # Reference weight = dimension/leader lines (the strokes that carry arrowheads)
+    tips = [a.center for a in pd.arrowheads()]
+    dim_w: Counter = Counter()
+    for sg in pd.segs:
+        if sg.width > 0 and sg.length > 10 and any(_close(e, t, 6.0) for e in (sg.a, sg.b) for t in tips):
+            dim_w[round(sg.width, 2)] += 1
+    thin = dim_w.most_common(1)[0][0] if dim_w else c.most_common(1)[0][0]
+    heavy = [(n, w) for w, n in c.items() if w >= thin * 1.6 and n >= 15]
+    return max(heavy)[1] if heavy else None
+
+
+def _view_bodies(pd: PageData, frame: fitz.Rect, labels: list, blocked: list[fitz.Rect]):
+    """[(view name, [cell centres])] for part-outline clusters that a view label claims."""
+    w = _outline_width(pd)
+    if w is None or not labels:
+        return []
+    cell, grow = 4.0, 2
+    ox, oy = pd.rect.x0, pd.rect.y0
+
+    def ok(q: fitz.Point) -> bool:
+        return (frame + (-1, -1, 1, 1)).contains(q) and not any(b.contains(q) for b in blocked)
+
+    filled: set[tuple[int, int]] = set()
+    for sg in pd.segs:
+        if abs(sg.width - w) > 0.05 or not (ok(sg.a) and ok(sg.b)):
+            continue
+        if sg.length > frame.width * 0.5:
+            continue
+        steps = int(sg.length / cell) + 1
+        for k in range(steps + 1):
+            t = k / steps
+            filled.add((int((sg.a.x + t * (sg.b.x - sg.a.x) - ox) / cell), int((sg.a.y + t * (sg.b.y - sg.a.y) - oy) / cell)))
+    for cv in pd.curves:
+        if abs(cv.width - w) > 0.05 or not (ok(cv.rect.tl) and ok(cv.rect.br)):
+            continue
+        for q in (cv.samples or cv.ends):
+            filled.add((int((q.x - ox) / cell), int((q.y - oy) / cell)))
+    grown: set[tuple[int, int]] = set()
+    for (i, j) in filled:
+        for di in range(-grow, grow + 1):
+            for dj in range(-grow, grow + 1):
+                grown.add((i + di, j + dj))
+    seen: set[tuple[int, int]] = set()
+    comps: list = []
+    for start in grown:
+        if start in seen:
+            continue
+        stack, cells = [start], []
+        seen.add(start)
+        while stack:
+            i, j = stack.pop()
+            cells.append((i, j))
+            for nb in ((i + 1, j), (i - 1, j), (i, j + 1), (i, j - 1)):
+                if nb in grown and nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+        if len(cells) < 40:
+            continue
+        own = [fitz.Point(ox + (i + 0.5) * cell, oy + (j + 0.5) * cell) for (i, j) in cells if (i, j) in filled]
+        xs, ys = [q.x for q in own], [q.y for q in own]
+        comps.append((fitz.Rect(min(xs), min(ys), max(xs), max(ys)), own))
+    if not comps:
+        return []
+    names = _assign_labels([(l.name, l.rect) for l in labels], [c[0] for c in comps], max_cost=160.0)
+    return [(names[k], comps[k][1]) for k in range(len(comps)) if k in names]
+
+
+def _cells_dist(pts: list, a: fitz.Point) -> float:
+    return min(math.hypot(q.x - a.x, q.y - a.y) for q in pts)
+
+
+def _anchors(pd: PageData, f) -> list:
+    """Points where an annotation attaches to the part: extension-line feet, leader tips, symbols."""
+    pts: list = []
+    if f.kind == "dim":
+        dl = _dimension_line(pd, f.rect, pd.arrowheads())
+        if dl is not None:
+            pts += [dl.a, dl.b]
+            for e in (dl.a, dl.b):
+                for sg in pd.segs:
+                    if sg is dl or sg.length < 6:
+                        continue
+                    if _close(sg.a, e, 3.0) or _close(sg.b, e, 3.0) or _seg_near(e, sg, 1.5):
+                        far = max((sg.a, sg.b), key=lambda q: math.hypot(q.x - e.x, q.y - e.y))
+                        pts.append(far)
+    elif f.kind == "datum" and f.meta.get("tri") is not None:
+        t = f.meta["tri"]
+        pts.append(fitz.Point((t.x0 + t.x1) / 2, (t.y0 + t.y1) / 2))
+    elif f.kind == "surface":
+        for pid in _surface_symbol_near(pd, f.rect):
+            pts += [q for sg in pd.segs if sg.pid == pid for q in (sg.a, sg.b)]
+    if not pts:
+        tip = _leader_end(pd, f.rect)
+        if tip is not None:
+            pts.append(tip)
+    return pts or [f.center]
+
+
 def _view_for(regions: list, labels: list[ViewLabel], p: fitz.Point, grid: tuple | None = None) -> str:
     if grid is not None:
         cell, ox, oy = grid
@@ -1512,6 +1638,7 @@ def _extract(doc: fitz.Document) -> Extraction:
     regions_by_sheet: dict[int, list] = {}
     notes_region: dict[int, fitz.Rect | None] = {}
     grids_by_sheet: dict[int, tuple | None] = {}
+    body_block: dict[int, list[fitz.Rect]] = {}
 
     for pd in pages:
         sheet = pd.index + 1
@@ -1578,6 +1705,7 @@ def _extract(doc: fitz.Document) -> Extraction:
                         f.details.append("all over unless otherwise stated")
 
         blocked = excl + [l.rect for l in labels]
+        body_block[sheet] = list(blocked) + [t.rect for t in tables]
         regions_by_sheet[sheet] = _view_regions(pd, frame, labels, blocked)
         grids_by_sheet[sheet] = _CELLS.pop(id(pd), None)
 
@@ -1591,6 +1719,27 @@ def _extract(doc: fitz.Document) -> Extraction:
             continue
         f.view = _view_for(regions_by_sheet.get(f.sheet, []), labels_by_sheet.get(f.sheet, []), f.center,
                            grids_by_sheet.get(f.sheet))
+    # Outline-body assignment (overrides the whitespace clusters where outlines are distinguishable)
+    for pd in pages:
+        sheet = pd.index + 1
+        bodies = _view_bodies(pd, _inner_frame(pd), labels_by_sheet.get(sheet, []), body_block.get(sheet, []))
+        if not bodies:
+            continue
+        for f in all_features:
+            if f.sheet != sheet or f.view == "General notes":
+                continue
+            anchors = _anchors(pd, f)
+            best, best_d = None, 1e18
+            for name, pts in bodies:
+                d = min(_cells_dist(pts, a) for a in anchors)
+                if d < best_d:
+                    best, best_d = name, d
+            if best is not None and best_d <= 120:
+                f.view = best
+    for f in all_features:
+        if not f.view:
+            f.view = "Unassigned"
+            _LOG.warning("TVS extractor: no view for %r on sheet %s", f.text, f.sheet)
 
     # ---- callout reference notes
     label_index = {(l.name.upper()): (s, l) for s, ls in labels_by_sheet.items() for l in ls}
@@ -1615,6 +1764,12 @@ def _extract(doc: fitz.Document) -> Extraction:
 
     _link_hole_patterns(pages, all_features, labels_by_sheet)
     _link_sections(pages, all_features, callouts_by_sheet)
+    # An FCF stacked under a hole callout belongs with that callout
+    for f in all_features:
+        t = f.meta.get("applies_to")
+        if t is not None and t.view:
+            f.view = t.view
+
     _assign_critical(all_features, cc_flags, _cc_table_refs(all_tables), pages)
 
     all_notes.sort(key=lambda n: (n.sheet, n.rect.y0, n.rect.x0))
@@ -1633,14 +1788,17 @@ def _seg_near(p: fitz.Point, s: Seg, tol: float) -> bool:
 def _leader(pd: PageData, rect: fitz.Rect) -> tuple[fitz.Point | None, list[Seg]]:
     """Tip of the leader leaving a text block (follows joined segments; arrowhead tip if any)."""
     area = rect + (-4, -4, 4, 4)
-    start = [s for s in pd.segs if not s.dashed and (area.contains(s.a) or area.contains(s.b)) and s.length > 6
-             and not (rect.contains(s.a) and rect.contains(s.b))]
+    thin = pd.thin_width()
+    leader_ok = (lambda sg: 0 < sg.width <= thin * 1.25) if thin else (lambda sg: True)
+    start = [s for s in pd.segs if not s.dashed and leader_ok(s) and (area.contains(s.a) or area.contains(s.b))
+             and s.length > 6 and not ((rect + (-0.8, -0.8, 0.8, 0.8)).contains(s.a)
+                                       and (rect + (-0.8, -0.8, 0.8, 0.8)).contains(s.b))]
     best, best_d, best_chain = None, 0.0, []
     for s in start:
         chain = [s]
         cur = s.b if area.contains(s.a) else s.a
         for _ in range(4):
-            nxt = next((o for o in pd.segs if o is not s and not o.dashed and o.length > 3
+            nxt = next((o for o in pd.segs if o is not s and not o.dashed and o.length > 3 and leader_ok(o)
                         and (_close(o.a, cur, 1.2) or _close(o.b, cur, 1.2))), None)
             if nxt is None:
                 break
