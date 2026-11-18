@@ -1244,6 +1244,22 @@ def detect_dimensions(pd: PageData, sheet: int, exclude: list[fitz.Rect]) -> lis
 NUMBERED = re.compile(r"^(\d{1,2})\.\s*(.*)$")
 
 
+def _free_text_blocks(pd: PageData) -> list[list[TLine]]:
+    """Unclaimed horizontal text with at least one real word, grouped into stacked blocks."""
+    left = sorted([l for l in pd.lines if not l.used and l.horizontal and re.search(r"[A-Za-z]{2,}", l.text)],
+                  key=lambda l: (l.rect.y0, l.rect.x0))
+    blocks: list[list[TLine]] = []
+    for ln in left:
+        for blk in blocks:
+            last = blk[-1]
+            if 0 <= ln.rect.y0 - last.rect.y1 <= max(ln.size, last.size) * 1.2 and abs(ln.rect.x0 - blk[0].rect.x0) <= 4:
+                blk.append(ln)
+                break
+        else:
+            blocks.append([ln])
+    return blocks
+
+
 def _notes_block(pd: PageData, frame: fitz.Rect, exclude: list[fitz.Rect], sheet: int) -> tuple[list[Note], fitz.Rect | None]:
     head = next((ln for ln in pd.lines if not ln.used and re.fullmatch(r"(GENERAL\s+)?NOTES:?", ln.text, re.I)), None)
     if head is None:
@@ -1664,6 +1680,7 @@ class Extraction:
     page_rects: list[fitz.Rect]
     frames: dict = field(default_factory=dict)        # sheet -> inner drawing frame
     blocks: dict = field(default_factory=dict)        # sheet -> [(kind, rect)] title block / revision table
+    orphans: list = field(default_factory=list)       # (sheet, text) runs claimed by no feature or note
 
 
 NEAR_BORDER_MM = float(__import__("os").environ.get("TVS_NEAR_BORDER_MM", "15"))
@@ -1769,6 +1786,9 @@ def _extract(doc: fitz.Document) -> Extraction:
         for ln in pd.lines:
             if not ln.used and re.match(r"^=\s*GENERAL\s+SURFACE", ln.text, re.I):
                 ln.used = True
+                for o in pd.lines:  # "( √ )" brackets of the legend
+                    if not o.used and o.text in ("(", ")") and abs(o.center.y - ln.center.y) < 15 and o.rect.x1 <= ln.rect.x0 + 2:
+                        o.used = True
                 for f in surf:
                     if abs(f.center.y - ln.center.y) < 15 and f.rect.x1 < ln.rect.x0 + 5:
                         f.view = "General notes"
@@ -1845,6 +1865,23 @@ def _extract(doc: fitz.Document) -> Extraction:
 
     _assign_critical(all_features, cc_flags, _cc_table_refs(all_tables), pages)
 
+    # Free text outside views / tables / title block -> Notes; then the text-coverage check
+    orphans: list = []
+    for pd in pages:
+        sheet = pd.index + 1
+        for blk in _free_text_blocks(pd):
+            text = " ".join(l.text for l in blk)
+            r = fitz.Rect(blk[0].rect)
+            for l in blk:
+                r |= l.rect
+                l.used = True
+            kind = "Cross-reference note" if re.search(r"\bSEE\s+(SHEET|DRAWING|DWG|DETAIL|VIEW)\b|\bREFER\s+TO\b", text, re.I) else "Text"
+            all_notes.append(Note(sheet, r, "Free text", kind, text))
+        for ln in pd.lines:
+            if not ln.used:
+                orphans.append((sheet, ln.text))
+                _LOG.warning("TVS extractor: text run %r on sheet %s is in no feature or note", ln.text, sheet)
+
     # Cross-check: every datum referenced by a feature control frame is defined exactly once
     referenced = {d for f in all_features if f.kind == "fcf" for d in f.datums}
     defined: dict[str, int] = {}
@@ -1856,7 +1893,8 @@ def _extract(doc: fitz.Document) -> Extraction:
             _LOG.warning("TVS extractor: datum %s referenced by an FCF is defined %d times", d, defined.get(d, 0))
 
     all_notes.sort(key=lambda n: (n.sheet, n.rect.y0, n.rect.x0))
-    return Extraction(all_features, all_notes, len(pages), [p.rect for p in pages], frames_by_sheet, blocks_by_sheet)
+    return Extraction(all_features, all_notes, len(pages), [p.rect for p in pages], frames_by_sheet, blocks_by_sheet,
+                      orphans)
 
 
 # ----------------------------------------------------------------------------- links

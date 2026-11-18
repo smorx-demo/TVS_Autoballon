@@ -937,7 +937,8 @@ def _extraction_rows(src_pdf: Path, sheets: set[int] | None = None,
         if doc.page_count:
             r = doc[0].rect
             size = f"{round(r.width * PT_TO_MM)} x {round(r.height * PT_TO_MM)} mm"
-        return rows, note_rows, doc.page_count, size
+        orphans = [(s, t) for s, t in ext.orphans if not sheets or s in sheets]
+        return rows, note_rows, doc.page_count, size, orphans
     finally:
         doc.close()
 
@@ -956,7 +957,7 @@ def build_tvs_extraction_xlsx(meta: dict, src_pdf: Path, report_rows: list[dict]
     (tvs_extractor); `page` / `area` restrict the report to one sheet or a work area.
     `report_rows` / `balloons` are accepted for API compatibility and are not used.
     """
-    features, notes, sheet_count, size = _extraction_rows(Path(src_pdf), {page} if page else None, area)
+    features, notes, sheet_count, size, orphans = _extraction_rows(Path(src_pdf), {page} if page else None, area)
 
     wb = Workbook()
     # --- Summary ---
@@ -1005,6 +1006,7 @@ def build_tvs_extraction_xlsx(meta: dict, src_pdf: Path, report_rows: list[dict]
     for label, fids in _scope_coverage(features, notes):
         ws.append([label, len(fids), ", ".join(fids)])
     ws.append(["Notes & textual information", len(notes), "See Notes tab"])
+    ws.append(["Unaccounted text runs", len(orphans), "; ".join(f"S{s}: {t}" for s, t in orphans) or "none"])
     for row in ws.iter_rows(min_row=2):
         for c in row:
             c.alignment = Alignment(wrap_text=True, vertical="top")

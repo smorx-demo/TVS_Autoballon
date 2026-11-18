@@ -344,8 +344,14 @@ def evaluate(output_src, key_src) -> dict:
             if got != n:
                 summary_diff.append((section, label, n, got))
 
+    # Text coverage: every text run on the drawing must land in a feature or a note
+    orphans = 0
+    for items in os_.values():
+        orphans += int(items.get("Unaccounted text runs", 0) or 0)
+
     passed = (
-        counts.get("correct", 0) == len(exp_f)
+        orphans == 0
+        and counts.get("correct", 0) == len(exp_f)
         and not spurious
         and notes_found == len(key["notes"])
         and not notes_extra
@@ -362,6 +368,7 @@ def evaluate(output_src, key_src) -> dict:
         "notes": {"expected": len(key["notes"]), "found": notes_found, "missing": notes_missing,
                   "extra": notes_extra},
         "summary_diff": summary_diff,
+        "orphans": orphans,
         "passed": passed,
     }
 
@@ -375,6 +382,7 @@ def format_report(r: dict, verbose: bool = True) -> str:
     n = r["notes"]
     L.append(f"Notes: {n['found']}/{n['expected']} found, {len(n['extra'])} extra non-heading rows")
     L.append(f"Summary differences: {len(r['summary_diff'])}")
+    L.append(f"Unaccounted text runs: {r.get('orphans', 0)}")
     L.append("PASS" if r["passed"] else "FAIL")
     if verbose:
         L.append("\nPer-field accuracy (over matched features):")
