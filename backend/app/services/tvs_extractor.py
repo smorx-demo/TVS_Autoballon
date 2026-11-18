@@ -538,6 +538,28 @@ GDT_FONT_CODES = {
 }
 
 
+def symbol_strokes(pd: PageData, cell: fitz.Rect) -> tuple[list[Seg], list[Curve], list[Poly]]:
+    """
+    Strokes forming the symbol drawn in an FCF compartment. Symbol strokes may touch the
+    compartment border (e.g. the slanted lines of cylindricity), so take everything within the
+    cell plus 1 pt, minus lines that run along the cell's own edges (frame / dividers).
+    """
+    area = cell + (-1.0, -1.0, 1.0, 1.0)
+
+    def on_edge(sg: Seg) -> bool:
+        if sg.is_h:
+            return min(abs(sg.a.y - cell.y0), abs(sg.a.y - cell.y1)) <= 0.8
+        if sg.is_v:
+            return min(abs(sg.a.x - cell.x0), abs(sg.a.x - cell.x1)) <= 0.8
+        return False
+
+    segs = [sg for sg in pd.segs if area.contains(sg.a) and area.contains(sg.b) and not on_edge(sg)]
+    curves = [c for c in pd.curves if area.contains(c.rect.tl) and area.contains(c.rect.br)]
+    polys = [q for q in pd.polys if area.contains(q.rect.tl) and area.contains(q.rect.br)
+             and q.rect.width < cell.width * 0.95]
+    return segs, curves, polys
+
+
 def classify_gdt_symbol(segs: list[Seg], curves: list[Curve], polys: list[Poly]) -> str | None:
     """Recognise an ISO 1101 characteristic symbol from the strokes inside an FCF cell."""
     uniq_segs: list[Seg] = []
@@ -677,9 +699,7 @@ def detect_fcfs(pd: PageData, sheet: int, exclude: list[fitz.Rect]) -> tuple[lis
                 sym_idx, sym = k, g
                 break
             if not lines:
-                inner = r + (0.6, 0.6, -0.6, -0.6)
-                segs, curves, polys = pd.strokes_in(inner)
-                polys = [p for p in polys if p.rect.width < r.width * 0.95]
+                segs, curves, polys = symbol_strokes(pd, r)
                 if segs or curves or polys:
                     g = classify_gdt_symbol(segs, curves, polys)
                     if g:
