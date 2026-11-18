@@ -1,0 +1,50 @@
+# Secrets
+.env
+.env.production
+.env.smorx-inspection.production
+.secrets/
+backend/.env
+*.pem
+*.key
+credentials.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env.local
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/dist-desktop/
+frontend/.vite/
+frontend/src-tauri/target/
+frontend/src-tauri/gen/
+
+# Runtime / job data
+backend/data/jobs/
+backend/data/tablets.json
+data/jobs/
+data/learned_feedback.json
+backend/data/learned_feedback.json
+*.db
+
+# Local tooling (portable git, etc.)
+.tools/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.cursor/
+*.log
+
+# Temp renders / local checks
+_*.jpg
+_*.png
+_*.pdf
+*.ocr.pdf
