@@ -939,3 +939,13 @@ def build_tvs_extraction_xlsx(meta: dict, src_pdf: Path, report_rows: list[dict]
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def build_tvs_extraction_from_pdf(src_pdf: Path, meta: dict | None = None) -> bytes:
+    """End-to-end: drawing PDF → TVS extraction report bytes (used by the evaluator / CLI)."""
+    from app.services.autoballoon_engine import balloon_pdf
+
+    src_pdf = Path(src_pdf)
+    _out, chars, _log, _ext = balloon_pdf(src_pdf.read_bytes())
+    balloons = [c.__dict__ if hasattr(c, "__dict__") else dict(c) for c in chars]
+    return build_tvs_extraction_xlsx(meta or {}, src_pdf, None, balloons)
