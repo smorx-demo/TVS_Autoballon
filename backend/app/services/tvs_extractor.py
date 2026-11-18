@@ -1050,7 +1050,7 @@ def group_dimension_texts(pd: PageData, exclude: list[fitz.Rect]) -> list[tuple[
 
 DIM_CORE = re.compile(
     r"^(?:(?P<qty>\d+)\s*[×xX]\s*)?"
-    r"(?P<pre>Ø|S?R|SØ)?\s*(?P<num>\d+(?:[.,]\d+)?)\s*(?P<deg>°)?"
+    r"(?P<depth>↧)?\s*(?P<pre>Ø|S?R|SØ)?\s*(?P<num>\d+(?:[.,]\d+)?)\s*(?P<deg>°)?"
     r"(?:\s*(?P<fit>[A-Za-z]{1,2}\d{1,2}))?"
     r"(?:\s*±\s*(?P<pm>\d+(?:[.,]\d+)?)\s*°?)?"
     r"(?:\s*(?P<dev1>[+-]?\d+(?:[.,]\d+)?)\s*/\s*(?P<dev2>[+-]?\d+(?:[.,]\d+)?))?$"
@@ -1122,6 +1122,9 @@ def parse_dimension(nom: str, devs: list[str]) -> dict | None:
             detail.append("limits from ISO 286-2 table")
         elif fit_dev and (abs(fit_dev[0] - upper) > 1e-6 or abs(fit_dev[1] - lower) > 1e-6):
             detail.append(f"printed limits differ from ISO 286-2 ({_fmt(fit_dev[0])}/{_fmt(fit_dev[1])})")
+    if m.group("depth"):
+        sym = "↧"  # depth symbol written in front of the value
+        detail.insert(0, "depth")
     return {"type": typ, "symbol": sym, "nominal": num, "upper": upper, "lower": lower, "detail": "; ".join(detail),
             "ref": ref, "qty": int(m.group("qty")) if m.group("qty") else None, "fit": fit}
 
@@ -1309,24 +1312,63 @@ def _notes_block(pd: PageData, frame: fitz.Rect, exclude: list[fitz.Rect], sheet
     return notes, region
 
 
+_GDT_GLYPHS = "⌖⏥⏤○⌭⌓⌒⊥∥∠↗⌰◎⌯"
+
+
+def _space_glyphs(t: str) -> str:
+    """Separate a GD&T glyph from the value that follows it: '⊥Ø0.03' -> '⊥ Ø0.03'."""
+    return re.sub(rf"([{_GDT_GLYPHS}])(?=\S)", r"\1 ", t)
+
+
 def _table_notes(t: Table, sheet: int) -> list[Note]:
+    """
+    Notes for a ruled table. Row rendering conventions per table type:
+      revision : 'REV | zone ZONE | DESCRIPTION | DATE | BY'
+      fit      : 'FIT: deviations DEV; max MAX, min MIN[; other columns]'
+      cc       : 'ID: CHARACTERISTIC[ (SHEET / VIEW)]'
+      other    : cells joined with ' | '
+    Column roles come from the table's own header row.
+    """
     out = []
+    header: list[str] = []
     for k, (row, rr) in enumerate(zip(t.rows, t.row_rects)):
-        txt = " | ".join(c for c in row if c)
+        cells = [_space_glyphs(c) for c in row if c]
+        txt = " | ".join(cells)
         if t.kind == "title":
             continue
         is_header = all(not re.search(r"\d", c) and c.upper() == c for c in row) and k <= 1
+        if is_header:
+            if len(row) >= 2:
+                header = [c.upper() for c in row]
+            area = {"revision": "Revision table", "fit": "Fit limits table", "cc": "CC table"}.get(t.kind, "Table")
+            out.append(Note(sheet, rr, area, "Heading", txt))
+            continue
+        cols = dict(zip(header, cells)) if len(header) == len(cells) else {}
         if t.kind == "revision":
-            if is_header:
-                out.append(Note(sheet, rr, "Revision table", "Heading", txt))
-            else:
-                out.append(Note(sheet, rr, "Revision table", f"Revision {row[0]}", txt))
+            if cols and "ZONE" in cols:
+                txt = " | ".join(f"zone {v}" if h == "ZONE" else v for h, v in zip(header, cells))
+            out.append(Note(sheet, rr, "Revision table", f"Revision {row[0]}", txt))
         elif t.kind == "fit":
-            out.append(Note(sheet, rr, "Fit limits table", "Heading" if is_header else "Fit limits", txt))
+            if cols and len(cells) >= 2:
+                lab = [h for h in header[1:]]
+                parts, i = [], 1
+                while i < len(cells):
+                    h = header[i]
+                    if h == "MAX" and i + 1 < len(cells) and header[i + 1] == "MIN":
+                        parts.append(f"max {cells[i]}, min {cells[i + 1]}")
+                        i += 2
+                        continue
+                    parts.append(f"{h.lower()} {cells[i]}" if h in ("DEVIATIONS", "DEVIATION", "MAX", "MIN", "TOLERANCE")
+                                 else cells[i])
+                    i += 1
+                txt = f"{cells[0]}: " + "; ".join(parts)
+            out.append(Note(sheet, rr, "Fit limits table", "Fit limits", txt))
         elif t.kind == "cc":
-            out.append(Note(sheet, rr, "CC table", "Heading" if is_header else "Critical characteristic", txt))
+            if len(cells) >= 2:
+                txt = f"{cells[0]}: {cells[1]}" + (f" ({' '.join(cells[2:])})" if len(cells) > 2 else "")
+            out.append(Note(sheet, rr, "CC table", "Critical characteristic", txt))
         else:
-            out.append(Note(sheet, rr, "Table", "Heading" if is_header else "Table row", txt))
+            out.append(Note(sheet, rr, "Table", "Table row", txt))
     if t.kind == "title":
         cells = [c for row in t.rows for c in row if c]
         out.append(Note(sheet, t.rect, "Title block", "Title block", " | ".join(cells)))
