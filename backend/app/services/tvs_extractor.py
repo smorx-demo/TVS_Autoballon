@@ -70,6 +70,7 @@ class Seg:
     b: fitz.Point
     pid: int
     dashed: bool = False
+    width: float = 0.0
 
     @property
     def length(self) -> float:
@@ -101,6 +102,21 @@ class Curve:
     rect: fitz.Rect
     closed: bool
     dashed: bool
+    samples: list[fitz.Point] = field(default_factory=list)
+
+    def circle(self) -> tuple[fitz.Point, float] | None:
+        """Circle through first / middle / last sample points (arc geometry)."""
+        pts = self.samples or self.ends
+        if len(pts) < 3:
+            return None
+        a, b, c = pts[0], pts[len(pts) // 2], pts[-1]
+        d = 2 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y))
+        if abs(d) < 1e-6:
+            return None
+        ux = ((a.x ** 2 + a.y ** 2) * (b.y - c.y) + (b.x ** 2 + b.y ** 2) * (c.y - a.y) + (c.x ** 2 + c.y ** 2) * (a.y - b.y)) / d
+        uy = ((a.x ** 2 + a.y ** 2) * (c.x - b.x) + (b.x ** 2 + b.y ** 2) * (a.x - c.x) + (c.x ** 2 + c.y ** 2) * (b.x - a.x)) / d
+        ctr = fitz.Point(ux, uy)
+        return ctr, math.hypot(a.x - ux, a.y - uy)
 
     @property
     def center(self) -> fitz.Point:
@@ -183,13 +199,19 @@ class PageData:
         for pid, d in enumerate(self.page.get_drawings()):
             dashed = bool(d.get("dashes")) and str(d.get("dashes")).strip() not in ("[] 0", "[]0", "")
             filled = d.get("fill") is not None
+            width = float(d.get("width") or 0.0)
             items = d.get("items") or []
             lines_only = all(it[0] == "l" for it in items)
             curves_only = all(it[0] == "c" for it in items) and items
             if curves_only:
                 ends = [_pt(items[0][1])] + [_pt(it[4]) for it in items]
                 closed = _close(ends[0], ends[-1], 0.8)
-                self.curves.append(Curve(pid, ends[:-1] if closed else ends, fitz.Rect(d["rect"]), closed, dashed))
+                samples = [_pt(items[0][1])]
+                for it in items:
+                    p0, p1, p2, p3 = (_pt(q) for q in it[1:5])
+                    samples.append(fitz.Point((p0.x + 3 * p1.x + 3 * p2.x + p3.x) / 8, (p0.y + 3 * p1.y + 3 * p2.y + p3.y) / 8))
+                    samples.append(p3)
+                self.curves.append(Curve(pid, ends[:-1] if closed else ends, fitz.Rect(d["rect"]), closed, dashed, samples))
                 continue
             if lines_only and len(items) in (3, 4):
                 pts = [_pt(it[1]) for it in items]
@@ -200,7 +222,7 @@ class PageData:
             for it in items:
                 op = it[0]
                 if op == "l":
-                    self.segs.append(Seg(_pt(it[1]), _pt(it[2]), pid, dashed))
+                    self.segs.append(Seg(_pt(it[1]), _pt(it[2]), pid, dashed, width))
                 elif op == "re":
                     r = fitz.Rect(it[1])
                     pts = [r.tl, r.tr, r.br, r.bl]
@@ -860,6 +882,15 @@ def detect_threads(pd: PageData, sheet: int, exclude: list[fitz.Rect]) -> list[F
             if re.search(r"\bEQ\s*SP\b", extra, re.I):
                 bits.append("equally spaced")
         f = Feature(sheet, rect, "Thread", full, symbol="M", nominal=f"M{d}", details=[", ".join(bits)], kind="thread")
+        if depths:
+            f.meta["thread_depth"] = _f(depths[0])
+        for extra in parts[1:]:
+            dm = re.match(r"^Ø\s*(\d+(?:[.,]\d+)?)\s*↧\s*(\d+(?:[.,]\d+)?)", extra)
+            if dm:
+                f.meta["drill"] = (_f(dm.group(1)), _f(dm.group(2)))
+            cm = re.search(r"CSK\s*Ø?\s*(\d+(?:[.,]\d+)?)\s*[×xX]\s*(\d+(?:[.,]\d+)?)\s*°", extra)
+            if cm:
+                f.meta["csk"] = (_f(cm.group(1)), _f(cm.group(2)))
         if m.group("qty"):
             f.notes.append(f"Qty {m.group('qty')} ({m.group('qty')}×)")
             f.meta["qty"] = int(m.group("qty"))
@@ -1558,6 +1589,7 @@ def _extract(doc: fitz.Document) -> Extraction:
                                       "Detail reference", f"{letter} ({where})"))
 
     _link_hole_patterns(pages, all_features, labels_by_sheet)
+    _link_sections(pages, all_features, callouts_by_sheet)
     _assign_critical(all_features, cc_flags, _cc_table_refs(all_tables), pages)
 
     all_notes.sort(key=lambda n: (n.sheet, n.rect.y0, n.rect.x0))
@@ -1618,7 +1650,7 @@ def _link_hole_patterns(pages: list[PageData], feats: list[Feature], labels: dic
             r = (c.rect.width + c.rect.height) / 4
             if not any(math.hypot(cc.x - o.x, cc.y - o.y) < 2 and abs(r - orr) < 2 for o, orr in circles):
                 circles.append((cc, r))
-        holes = [c for c in pd.curves if c.closed and not c.dashed and 2 < c.radius < 15]
+        holes = [c for c in pd.curves if c.closed and not c.dashed and 2 < c.radius < 40]
         for f in feats:
             if f.sheet != sheet:
                 continue
@@ -1639,12 +1671,59 @@ def _link_hole_patterns(pages: list[PageData], feats: list[Feature], labels: dic
                        key=lambda h: -h.radius, default=None)
             if hole is None:
                 continue
+            t.meta["holes"] = [hole]
             for p in pcd_feats:
                 cc, r = p.meta["pcd"]
                 if abs(math.hypot(hole.center.x - cc.x, hole.center.y - cc.y) - r) < 2.5:
                     qty = t.meta.get("qty") or 1
                     t.details[0] += f"; {qty} holes on PCD Ø{_fmt(p.nominal)}"
+                    t.meta["holes"] = [h for h in holes if h.radius <= hole.radius + 0.5 and h.radius >= hole.radius - 0.5
+                                       and abs(math.hypot(h.center.x - cc.x, h.center.y - cc.y) - r) < 2.5]
+                    t.meta["pcd_center"] = cc
                     p.details = [f"Pitch circle of {qty}× M{t.meta['size']}; theoretically exact"]
+        threads_here = [f for f in feats if f.sheet == sheet and f.kind == "thread" and f.meta.get("holes")]
+        open_arcs = [c for c in pd.curves if not c.closed and not c.dashed and len(c.samples) >= 3]
+        # Radius whose arc is concentric with a threaded hole
+        for f in [f for f in feats if f.sheet == sheet and f.ftype == "Radius"]:
+            tip = _leader_end(pd, f.rect)
+            if tip is None:
+                continue
+            for arc in open_arcs:
+                if min(math.hypot(q.x - tip.x, q.y - tip.y) for q in arc.samples) > 6:
+                    continue
+                circ = arc.circle()
+                if circ is None:
+                    continue
+                for t in threads_here:
+                    if any(math.hypot(h.center.x - circ[0].x, h.center.y - circ[0].y) < 2.5 for h in t.meta["holes"]):
+                        f.details.append(f"concentric with M{t.meta['size']} hole")
+                        break
+        # Basic angle whose inclined leg passes through a threaded hole pattern
+        for f in [f for f in feats if f.sheet == sheet and f.ftype == "Basic angle"]:
+            near_arcs = [a for a in open_arcs if _rect_dist(a.rect, f.rect) < 25]
+            done = False
+            for arc in near_arcs:
+                circ = arc.circle()
+                if circ is None:
+                    continue
+                ctr = circ[0]
+                for end in (arc.samples[0], arc.samples[-1]):
+                    ang = math.degrees(math.atan2(-(end.y - ctr.y), end.x - ctr.x)) % 180
+                    if min(ang % 90, 90 - ang % 90) < 3:
+                        continue  # principal axis leg
+                    for t in threads_here:
+                        for h in t.meta["holes"]:
+                            ha = math.degrees(math.atan2(-(h.center.y - ctr.y), h.center.x - ctr.x)) % 180
+                            if abs(ha - ang) < 3:
+                                f.details.append(f"Angular position of M{t.meta['size']} holes")
+                                done = True
+                                break
+                        if done:
+                            break
+                    if done:
+                        break
+                if done:
+                    break
         # Datum feature whose triangle sits on a hole callout's leader = that hole's axis
         for t in [f for f in feats if f.sheet == sheet and f.kind == "thread"]:
             _tip, chain = _leader(pd, t.rect)
@@ -1660,6 +1739,49 @@ def _link_hole_patterns(pages: list[PageData], feats: list[Feature], labels: dic
                 qty = t.meta.get("qty")
                 g.details[0] += f"; applies to {str(qty) + '× ' if qty else ''}M{t.meta['size']}"
                 g.meta["applies_to"] = t
+
+
+def _link_sections(pages: list[PageData], feats: list[Feature], callouts: dict[int, list]) -> None:
+    """A section cut through a callout's hole repeats that callout's values (depths, CSK)."""
+    for sheet, cos in callouts.items():
+        pd = pages[sheet - 1]
+        widths = sorted(s.width for s in pd.segs if s.width > 0)
+        if not widths:
+            continue
+        thick = widths[len(widths) // 2] * 1.8
+        for kind, letter, r in cos:
+            if kind != "section":
+                continue
+            ends = [s for s in pd.segs if s.width >= thick and s.length < 40 and _rect_dist(s.rect, r) < 45]
+            if len(ends) < 2:
+                continue
+            m = [fitz.Point((s.a.x + s.b.x) / 2, (s.a.y + s.b.y) / 2) for s in ends]
+            a, b = max(((p, q) for p in m for q in m), key=lambda pq: math.hypot(pq[0].x - pq[1].x, pq[0].y - pq[1].y))
+            plane = Seg(a, b, -1)
+            thread = None
+            for t in [f for f in feats if f.sheet == sheet and f.kind == "thread"]:
+                if any(_seg_near(h.center, plane, h.radius * 0.5 + 1.0) for h in t.meta.get("holes", [])):
+                    thread = t
+                    break
+            if thread is None:
+                continue
+            size = thread.meta.get("size")
+            view = f"Section {letter}-{letter}"
+            for f in feats:
+                if f.view != view or f.kind != "dim" or not isinstance(f.nominal, (int, float)):
+                    continue
+                if f.ftype in ("Linear dimension", "Inclined linear dimension"):
+                    if thread.meta.get("thread_depth") == f.nominal:
+                        f.symbol = "↧"
+                        f.details.insert(0, f"M{size} full-thread depth")
+                    elif thread.meta.get("drill") and thread.meta["drill"][1] == f.nominal:
+                        f.symbol = "↧"
+                        f.details.insert(0, f"Tap drill Ø{_fmt(thread.meta['drill'][0])} depth")
+                elif thread.meta.get("csk"):
+                    if f.ftype == "Diameter" and thread.meta["csk"][0] == f.nominal:
+                        f.details.insert(0, f"Countersink diameter at M{size} entry")
+                    elif f.ftype == "Angular dimension" and thread.meta["csk"][1] == f.nominal:
+                        f.details.insert(0, f"Countersink included angle at M{size} entry")
 
 
 def _assign_critical(feats: list[Feature], flags: list[tuple[int, str, fitz.Rect]], table: dict[str, list[dict]],
