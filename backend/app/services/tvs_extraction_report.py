@@ -864,7 +864,7 @@ def _scope_coverage(features: list[dict], notes: list[dict]) -> list[tuple[str, 
 def _extraction_rows(src_pdf: Path, sheets: set[int] | None = None,
                      area: tuple[int, fitz.Rect] | None = None) -> tuple[list[dict], list[dict], int, str]:
     """Run the drawing extractor and shape its output into report rows."""
-    from app.services.tvs_extractor import PT_TO_MM as _MM, extract_drawing
+    from app.services.tvs_extractor import PT_TO_MM as _MM, extract_drawing, near_border_note
 
     ext = extract_drawing(src_pdf)
     doc = fitz.open(str(src_pdf))
@@ -896,12 +896,9 @@ def _extraction_rows(src_pdf: Path, sheets: set[int] | None = None,
                 max_lim = nom + (f.upper or 0.0)
                 min_lim = nom + (f.lower or 0.0)
             notes = list(f.notes)
-            near = ctx.near_border(c.x, c.y)
+            near = near_border_note(ext, f.sheet, f.rect)
             if near:
                 notes.append(near)
-            for tr in title_rects.get(f.sheet, []):
-                if _rect_gap(f.rect, tr) < 25:
-                    notes.append("Placed near title block")
             datums = (list(f.datums) + ["", "", ""])[:3]
             lo, hi = f.lower, f.upper
             rows.append(OrderedDict([
