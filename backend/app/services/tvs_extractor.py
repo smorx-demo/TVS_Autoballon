@@ -932,17 +932,17 @@ def group_dimension_texts(pd: PageData, exclude: list[fitz.Rect]) -> list[tuple[
             devs.append((_uv(c, d, n)[1], _norm(s.text), s.rect))
         if re.search(r"\d", nom) and (small or not re.search(r"±", nom)):
             # Look for separate smaller deviation lines just after the nominal
-            u_end = max(_uv(p, d, n)[0] for p in (nrect.tl, nrect.tr, nrect.bl, nrect.br))
-            _, v_mid = _uv(fitz.Point((nrect.x0 + nrect.x1) / 2, (nrect.y0 + nrect.y1) / 2), d, n)
+            corners_u = [_uv(p, d, n)[0] for p in (nrect.tl, nrect.tr, nrect.bl, nrect.br)]
+            half_len = (max(corners_u) - min(corners_u)) / 2
+            u_mid, v_mid = _uv(fitz.Point((nrect.x0 + nrect.x1) / 2, (nrect.y0 + nrect.y1) / 2), d, n)
             for o in lines:
                 if o is ln or o.used or o.size > ln.size * 0.85 or not DEV_RE.match(o.text):
                     continue
                 if abs(o.dir[0] - d[0]) > 0.05 or abs(o.dir[1] - d[1]) > 0.05:
                     continue
-                oc = o.center
-                ou, ov = _uv(oc, d, n)
-                u0 = min(_uv(p, d, n)[0] for p in (o.rect.tl, o.rect.tr, o.rect.bl, o.rect.br))
-                if -ln.size * 0.6 <= u0 - u_end <= ln.size * 1.2 and abs(ov - v_mid) <= ln.size:
+                ou, ov = _uv(o.center, d, n)
+                # centre-to-centre along the text direction (robust for rotated bounding boxes)
+                if 0 < ou - u_mid <= half_len + ln.size * 2.0 and abs(ov - v_mid) <= ln.size * 1.2:
                     devs.append((ov, o.text, o.rect))
                     o.used = True
         devs.sort(key=lambda t: t[0])
@@ -1146,10 +1146,17 @@ def _notes_block(pd: PageData, frame: fitz.Rect, exclude: list[fitz.Rect], sheet
                    key=lambda l: (round(l.rect.y0, 0), l.rect.x0))
     cur: Note | None = None
     last_y = head.rect.y1
+    text_x: float | None = None   # left edge of note text (continuation lines align to it)
     i = 0
     while i < len(below):
         ln = below[i]
         if ln.rect.y0 - last_y > max(ln.size, head.size) * 2.2:
+            break
+        if NUMBERED.match(ln.text) and len(ln.text.split(None, 1)) == 1:
+            nxt_txt = next((o for o in below if o is not ln and abs(o.rect.y0 - ln.rect.y0) < 1.5 and o.rect.x0 > ln.rect.x0), None)
+            if nxt_txt is not None:
+                text_x = nxt_txt.rect.x0
+        elif not NUMBERED.match(ln.text) and cur is not None and text_x is not None and abs(ln.rect.x0 - text_x) > 4:
             break
         # number and text may be separate lines on the same baseline
         same = [o for o in below if o is not ln and abs(o.rect.y0 - ln.rect.y0) < 1.5 and o.rect.x0 > ln.rect.x0]
