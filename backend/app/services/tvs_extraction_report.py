@@ -949,6 +949,9 @@ def _rect_gap(a: fitz.Rect, b: fitz.Rect) -> float:
     return math.hypot(dx, dy)
 
 
+_TABLE_AREAS = {"Revision table", "Fit limits table", "CC table", "Table"}
+
+
 def build_tvs_extraction_xlsx(meta: dict, src_pdf: Path, report_rows: list[dict] | None = None,
                               balloons: list[dict] | None = None, *, page: int | None = None,
                               area: tuple[int, fitz.Rect] | None = None) -> bytes:
@@ -996,7 +999,9 @@ def build_tvs_extraction_xlsx(meta: dict, src_pdf: Path, report_rows: list[dict]
         c.font = Font(bold=True)
     for sheet, n in sorted(Counter(f["Sheet"] for f in features).items()):
         ws.append([sheet, n])
-    ws.append(["Notes / text items (Notes tab)", len(notes)])
+    # Table title / column-header rows are structure, not note items (they stay in the Notes tab as Headings)
+    n_items = sum(1 for n in notes if not (n["type"] == "Heading" and n["view"] in _TABLE_AREAS))
+    ws.append(["Notes / text items (Notes tab)", n_items])
     ws.append([])
     ws.append(["Scope coverage (from the scope document)"])
     ws.cell(row=ws.max_row, column=1).font = Font(bold=True)
@@ -1005,7 +1010,7 @@ def build_tvs_extraction_xlsx(meta: dict, src_pdf: Path, report_rows: list[dict]
         c.font = Font(bold=True)
     for label, fids in _scope_coverage(features, notes):
         ws.append([label, len(fids), ", ".join(fids)])
-    ws.append(["Notes & textual information", len(notes), "See Notes tab"])
+    ws.append(["Notes & textual information", n_items, "See Notes tab"])
     ws.append(["Unaccounted text runs", len(orphans), "; ".join(f"S{s}: {t}" for s, t in orphans) or "none"])
     for row in ws.iter_rows(min_row=2):
         for c in row:
