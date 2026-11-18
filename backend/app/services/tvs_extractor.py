@@ -1672,7 +1672,8 @@ GDT_WORDS = {
     "runout": "circular_runout", "straightness": "straightness", "concentricity": "concentricity",
     "angularity": "angularity", "∠": "angularity", "symmetry": "symmetry", "⌯": "symmetry",
     "circularity": "circularity", "roundness": "circularity", "○": "circularity", "◎": "concentricity",
-    "profile of a line": "profile_line", "⌒": "profile_line",
+    "profile of a line": "profile_line", "⌒": "profile_line", "profile of line": "profile_line",
+    "profile of a surface": "profile_surface", "profile of surface": "profile_surface",
 }
 
 
@@ -1694,6 +1695,11 @@ def _cc_table_refs(tables: list[Table]) -> dict[str, list[dict]]:
             for part in re.split(r"\s\+\s", desc):
                 p = part.strip()
                 low = p.lower()
+                sm = re.match(r"^(?:U\s+)?(Ra|Rz)\s*(\d+(?:[.,]\d+)?)|^N(1[0-2]|[1-9])\b", p)
+                if sm:
+                    items.append({"kind": "surface", "symbol": sm.group(1) or "N",
+                                  "value": _f(sm.group(2)) if sm.group(2) else f"N{sm.group(3)}", "sheet": sheet})
+                    continue
                 g = None
                 for w in sorted(GDT_WORDS, key=len, reverse=True):
                     if w in low or w in p:
@@ -2206,7 +2212,10 @@ def _assign_critical(feats: list[Feature], flags: list[tuple[int, str, fitz.Rect
         if refs:
             for ref in refs:
                 cands = [f for f in feats if (ref.get("sheet") in (None, f.sheet))]
-                if ref["kind"] == "gdt":
+                if ref["kind"] == "surface":
+                    hit = [f for f in cands if f.kind == "surface" and f.symbol == ref["symbol"]
+                           and (f.nominal == ref["value"] or (isinstance(f.upper, (int, float)) and f.upper == ref["value"]))]
+                elif ref["kind"] == "gdt":
                     hit = [f for f in cands if f.kind == "fcf" and f.meta.get("gdt") == ref["gdt"]
                            and (ref["value"] is None or abs((f.nominal or 0) - ref["value"]) < 1e-6)]
                 else:
