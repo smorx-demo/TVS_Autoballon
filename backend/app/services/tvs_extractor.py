@@ -1158,6 +1158,11 @@ def _boxed(pd: PageData, rect: fitz.Rect, size: float) -> bool:
     return False
 
 
+def _arrowed_ends(sg: Seg, arrows: list[Poly]) -> int:
+    tips = [a.center for a in arrows]
+    return sum(1 for e in (sg.a, sg.b) if any(math.hypot(e.x - t.x, e.y - t.y) < 6 for t in tips))
+
+
 def _dimension_line(pd: PageData, rect: fitz.Rect, arrows: list[Poly]) -> Seg | None:
     """The dimension line a text belongs to: a segment with arrowheads, running past the text."""
     c = fitz.Point((rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2)
@@ -1212,9 +1217,15 @@ def detect_dimensions(pd: PageData, sheet: int, exclude: list[fitz.Rect]) -> lis
             kind = _tol_kind(f.lower, f.upper)
             if kind:
                 f.details.append(kind)
+            if f.toleranced and not info.get("fit") and f.ftype in ("Linear dimension", "Diameter"):
+                eq = iso286.equivalent_classes(nominal, f.upper or 0.0, f.lower or 0.0)
+                if eq:
+                    f.details.append("ISO 286 equivalent " + " / ".join(eq))
             if f.ftype == "Linear dimension":
                 dl = _dimension_line(pd, rect, arrows)
-                if dl is not None and not dl.is_h and not dl.is_v:
+                # Inclined = the dimension line itself is non-orthogonal (|angle mod 90| > 2 deg) and
+                # runs between two arrowheads; a one-arrow slanted line is a leader, not a dimension line.
+                if dl is not None and min(dl.angle % 90, 90 - dl.angle % 90) > 2.0 and _arrowed_ends(dl, arrows) == 2:
                     f.ftype = "Inclined linear dimension"
                     f.notes.append(f"Dimension line inclined at {dl.angle:.0f}°")
         if info.get("qty"):
