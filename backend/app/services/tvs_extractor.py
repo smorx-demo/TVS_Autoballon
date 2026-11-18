@@ -1836,6 +1836,7 @@ def _extract(doc: fitz.Document) -> Extraction:
 
     _link_hole_patterns(pages, all_features, labels_by_sheet)
     _link_sections(pages, all_features, callouts_by_sheet)
+    _link_thread_context(pages, all_features)
     # An FCF stacked under a hole callout belongs with that callout
     for f in all_features:
         t = f.meta.get("applies_to")
@@ -2006,6 +2007,74 @@ def _link_hole_patterns(pages: list[PageData], feats: list[Feature], labels: dic
                 g.meta["applies_to"] = t
 
 
+def _target_edge(pd: PageData, f: "Feature") -> Seg | None:
+    """The drawn edge a callout's leader lands on (longest stroked segment through the tip)."""
+    tip, chain = _leader(pd, f.rect)
+    if tip is None:
+        return None
+    edges = [sg for sg in pd.segs if sg.width > 0 and sg.length > 8 and sg not in chain and _seg_near(tip, sg, 2.0)]
+    return max(edges, key=lambda sg: sg.length) if edges else None
+
+
+def _link_thread_context(pages: list[PageData], feats: list["Feature"]) -> None:
+    """
+    Qualifiers from the thread's surroundings (same view):
+      • a linear dimension parallel to the thread edge over the same span = full-thread length
+      • a chamfer whose leader ends at the thread edge's end = chamfer on the thread end
+      • thread edge starting at the floor of a larger bore = 'at bottom of ØD bore'
+      • a dimension whose extension-line feet sit on the thread's hole centres = between those holes
+    """
+    arrows_by = {}
+    for t in [f for f in feats if f.kind == "thread"]:
+        pd = pages[t.sheet - 1]
+        arrows = arrows_by.setdefault(t.sheet, pd.arrowheads())
+        size = t.meta.get("size")
+        same_view = [f for f in feats if f.sheet == t.sheet and f.view == t.view and f is not t]
+        edge = _target_edge(pd, t)
+        if edge is not None:
+            ex0, ex1 = sorted((edge.a.x, edge.b.x)) if not edge.is_v else sorted((edge.a.y, edge.b.y))
+            for d in same_view:
+                if d.kind != "dim" or d.ftype not in ("Linear dimension", "Inclined linear dimension"):
+                    continue
+                dl = _dimension_line(pd, d.rect, arrows)
+                if dl is None or abs(dl.angle - edge.angle) > 2:
+                    continue
+                d0, d1 = sorted((dl.a.x, dl.b.x)) if not edge.is_v else sorted((dl.a.y, dl.b.y))
+                ov = max(0.0, min(ex1, d1) - max(ex0, d0))
+                if ex1 > ex0 and d1 > d0 and ov >= 0.85 * (ex1 - ex0) and ov >= 0.85 * (d1 - d0):
+                    t.details[0] += f", full-thread length {_fmt(d.nominal)}"
+                    d.details.insert(0, f"Full-thread length of M{size}")
+                    break
+            for c in same_view:
+                if c.ftype != "Chamfer":
+                    continue
+                tip = _leader_end(pd, c.rect)
+                if tip is not None and min(math.hypot(tip.x - e.x, tip.y - e.y) for e in (edge.a, edge.b)) <= 8:
+                    c.details.append(f"on M{size} thread end")
+            start = min((edge.a, edge.b), key=lambda q: q.x if not edge.is_v else q.y)
+            for d in same_view:
+                if d.kind != "dim" or d.symbol != "Ø" or not isinstance(d.nominal, (int, float)):
+                    continue
+                if size and d.nominal <= float(str(size).replace(",", ".")):
+                    continue
+                dl = _dimension_line(pd, d.rect, arrows)
+                if dl is None or abs(abs(dl.angle - edge.angle) - 90) > 2:
+                    continue
+                lo, hi = sorted((dl.a.y, dl.b.y)) if not edge.is_v else sorted((dl.a.x, dl.b.x))
+                along = abs((dl.a.x if not edge.is_v else dl.a.y) - (start.x if not edge.is_v else start.y))
+                across = start.y if not edge.is_v else start.x
+                if lo <= across <= hi and along <= 20:
+                    t.details[0] += f", at bottom of Ø{_fmt(d.nominal)} bore"
+                    break
+        holes = t.meta.get("holes") or []
+        if len(holes) >= 2:
+            for d in [f for f in feats if f.sheet == t.sheet and f.kind == "dim"]:
+                feet = [q for q in _anchors(pd, d)]
+                on = {id(h) for h in holes for q in feet if math.hypot(q.x - h.center.x, q.y - h.center.y) <= h.radius * 0.6 + 1.5}
+                if len(on) >= 2:
+                    d.details.insert(0, f"between M{size} holes")
+
+
 def _link_sections(pages: list[PageData], feats: list[Feature], callouts: dict[int, list]) -> None:
     """A section cut through a callout's hole repeats that callout's values (depths, CSK)."""
     for sheet, cos in callouts.items():
@@ -2041,7 +2110,7 @@ def _link_sections(pages: list[PageData], feats: list[Feature], callouts: dict[i
                         f.details.insert(0, f"M{size} full-thread depth")
                     elif thread.meta.get("drill") and thread.meta["drill"][1] == f.nominal:
                         f.symbol = "↧"
-                        f.details.insert(0, f"Tap drill Ø{_fmt(thread.meta['drill'][0])} depth")
+                        f.details.insert(0, f"M{size} tap drill Ø{_fmt(thread.meta['drill'][0])} depth")
                 elif thread.meta.get("csk"):
                     if f.ftype == "Diameter" and thread.meta["csk"][0] == f.nominal:
                         f.details.insert(0, f"Countersink diameter at M{size} entry")
