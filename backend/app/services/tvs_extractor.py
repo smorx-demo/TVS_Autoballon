@@ -1030,7 +1030,10 @@ DIM_CORE = re.compile(
     r"(?:\s*±\s*(?P<pm>\d+(?:[.,]\d+)?)\s*°?)?"
     r"(?:\s*(?P<dev1>[+-]?\d+(?:[.,]\d+)?)\s*/\s*(?P<dev2>[+-]?\d+(?:[.,]\d+)?))?$"
 )
-CHAMFER_RE = re.compile(r"^(?P<a>\d+(?:[.,]\d+)?)\s*[×xX]\s*(?P<ang>\d+(?:[.,]\d+)?)\s*°$")
+_QTY = r"(?:(?P<qty>\d+)\s*[×xX]\s+)?"
+CHAMFER_RE = re.compile(
+    r"^" + _QTY + r"(?:(?P<a>\d+(?:[.,]\d+)?)\s*[×xX]\s*(?P<ang>\d+(?:[.,]\d+)?)\s*°"
+    r"|(?P<ang2>\d+(?:[.,]\d+)?)\s*°\s*[×xX]\s*(?P<a2>\d+(?:[.,]\d+)?))$")
 
 
 def _f(s: str | None) -> float | None:
@@ -1047,8 +1050,10 @@ def parse_dimension(nom: str, devs: list[str]) -> dict | None:
         ref, t = True, t[1:-1].strip()
     cm = CHAMFER_RE.match(t)
     if cm and not devs:
-        return {"type": "Chamfer", "symbol": "°", "nominal": _f(cm.group("a")), "upper": None, "lower": None,
-                "detail": f"Chamfer {cm.group('a')} mm × {cm.group('ang')}°", "ref": ref}
+        size, ang = cm.group("a") or cm.group("a2"), cm.group("ang") or cm.group("ang2")
+        return {"type": "Chamfer", "symbol": "°", "nominal": _f(size), "upper": None, "lower": None,
+                "detail": f"Chamfer {size} mm × {ang}°", "ref": ref,
+                "qty": int(cm.group("qty")) if cm.group("qty") else None}
     m = DIM_CORE.match(t)
     if not m:
         return None
