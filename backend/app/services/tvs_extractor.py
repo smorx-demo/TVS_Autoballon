@@ -239,6 +239,17 @@ class PageData:
                     self.curves.append(Curve(pid, [_pt(it[1]), _pt(it[4])], fitz.Rect(d["rect"]), False, dashed))
 
     # -- helpers -----------------------------------------------------------------------
+    def words(self) -> list[TLine]:
+        """Word-level text items (as TLines) for cell-by-cell reading."""
+        if getattr(self, "_words", None) is None:
+            self._words = []
+            for x0, y0, x1, y1, w, *_ in self.page.get_text("words"):
+                t = _norm(w)
+                if t:
+                    r = fitz.Rect(x0, y0, x1, y1)
+                    self._words.append(TLine(t, r, (1.0, 0.0), r.height, [Span(t, r, r.height, "")], False))
+        return self._words
+
     def strokes_in(self, area: fitz.Rect) -> tuple[list[Seg], list[Curve], list[Poly]]:
         segs = [s for s in self.segs if area.contains(s.a) and area.contains(s.b)]
         curves = [c for c in self.curves if area.contains(c.rect.tl) and area.contains(c.rect.br)]
@@ -373,7 +384,7 @@ def _seg_bbox(segs: list[Seg]) -> fitz.Rect:
 
 def _find_tables(pd: PageData, frame: fitz.Rect) -> list[Table]:
     axis = [s for s in pd.segs if (s.is_h or s.is_v) and s.length >= 4 and not s.dashed
-            and frame.contains(fitz.Point((s.a.x + s.b.x) / 2, (s.a.y + s.b.y) / 2))]
+            and (frame + (-2, -2, 2, 2)).contains(fitz.Point((s.a.x + s.b.x) / 2, (s.a.y + s.b.y) / 2))]
     # Ignore the frame border itself
     axis = [s for s in axis if not ((s.is_h and s.length > frame.width * 0.9) or (s.is_v and s.length > frame.height * 0.9))]
     tables: list[Table] = []
@@ -516,6 +527,12 @@ GDT_FONT_CODES = {
 
 def classify_gdt_symbol(segs: list[Seg], curves: list[Curve], polys: list[Poly]) -> str | None:
     """Recognise an ISO 1101 characteristic symbol from the strokes inside an FCF cell."""
+    uniq_segs: list[Seg] = []
+    for sg in segs:   # closed paths repeat a stroke in reverse: count each once
+        if not any((_close(sg.a, u.a, 0.5) and _close(sg.b, u.b, 0.5)) or (_close(sg.a, u.b, 0.5) and _close(sg.b, u.a, 0.5))
+                   for u in uniq_segs):
+            uniq_segs.append(sg)
+    segs = uniq_segs
     arrows = [p for p in polys if p.filled and len(p.pts) == 3]
     closed4 = [p for p in polys if len(p.pts) == 4 and not p.filled]
     circles = [c for c in curves if c.closed]
@@ -634,9 +651,11 @@ def detect_fcfs(pd: PageData, sheet: int, exclude: list[fitz.Rect]) -> tuple[lis
         if any(e.contains(strip.tl) and e.contains(strip.br) for e in exclude):
             continue
         cells = []
+        strip_lines = [ln for ln in pd.lines if not ln.used and strip.contains(ln.center)]
         for r in row:
             inner = r + (0.8, 0.8, -0.8, -0.8)
-            lines = [ln for ln in pd.lines if not ln.used and inner.contains(ln.center)]
+            # Words, not lines: a datum letter set close to the value can share a text line with it
+            lines = [w for w in pd.words() if inner.contains(w.center)]
             cells.append((r, lines))
         sym_idx, sym = None, None
         for k, (r, lines) in enumerate(cells):
@@ -670,9 +689,8 @@ def detect_fcfs(pd: PageData, sheet: int, exclude: list[fitz.Rect]) -> tuple[lis
             t = " ".join(l.text for l in lines).strip()
             if re.fullmatch(r"[A-Z]{1,2}(?:\s*-\s*[A-Z]{1,2})?(?:\s*[MLⓂⓁ])?", t):
                 datum_letters.append(re.sub(r"\s+", "", t))
-        for r, lines in cells[sym_idx + 1:]:
-            for l in lines:
-                l.used = True
+        for ln in strip_lines:
+            ln.used = True
         ftype, symbol, label = GDT_NAMES[sym]
         frame = fitz.Rect(cells[sym_idx][0])
         for r, _ in cells[sym_idx + 1:]:
@@ -692,8 +710,6 @@ def detect_fcfs(pd: PageData, sheet: int, exclude: list[fitz.Rect]) -> tuple[lis
         for r, lines in cells[:sym_idx]:
             t = " ".join(l.text for l in lines).strip()
             if re.fullmatch(r"[A-Z]{1,2}", t):
-                for l in lines:
-                    l.used = True
                 datums.append(Feature(sheet, fitz.Rect(lines[0].rect), "Datum feature", t, nominal=t, kind="datum",
                                       details=[f"Datum {t}"], meta={"box": r}))
     return fcfs, datums
@@ -870,7 +886,7 @@ def detect_threads(pd: PageData, sheet: int, exclude: list[fitz.Rect]) -> list[F
             bits[0] += " coarse" if _iso_coarse_pitch(float(d.replace(",", "."))) == float(m.group("p").replace(",", ".")) else " fine"
         if m.group("cls"):
             bits.append(m.group("cls"))
-        depths = re.findall(r"↧\s*(\d+(?:[.,]\d+)?)|[×xX]?\s*(\d+(?:[.,]\d+)?)\s*DEEP", parts[0], re.I)
+        depths = re.findall(r"↧\s*(\d+(?:[.,]\d+)?)|[×xX]?\s*(\d+(?:[.,]\d+)?)\s*DEEP\b", parts[0], re.I)
         depths = [a or b for a, b in depths]
         if depths:
             bits.append(f"thread depth {depths[0]}")
@@ -1424,6 +1440,9 @@ GDT_WORDS = {
     "total runout": "total_runout", "⌰": "total_runout", "flatness": "flatness", "⏥": "flatness",
     "profile": "profile_surface", "⌓": "profile_surface", "cylindricity": "cylindricity", "⌭": "cylindricity",
     "runout": "circular_runout", "straightness": "straightness", "concentricity": "concentricity",
+    "angularity": "angularity", "∠": "angularity", "symmetry": "symmetry", "⌯": "symmetry",
+    "circularity": "circularity", "roundness": "circularity", "○": "circularity", "◎": "concentricity",
+    "profile of a line": "profile_line", "⌒": "profile_line",
 }
 
 
