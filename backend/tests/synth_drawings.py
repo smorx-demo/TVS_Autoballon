@@ -27,7 +27,8 @@ MM = 25.4 / 72
 FONT = "helv"
 
 GDT_SET = ["position", "perpendicularity", "parallelism", "flatness", "circular_runout", "total_runout",
-           "profile_surface", "straightness", "cylindricity", "angularity", "concentricity", "symmetry", "circularity"]
+           "profile_surface", "profile_line", "straightness", "cylindricity", "angularity", "concentricity", "symmetry",
+           "circularity"]
 GDT_LABEL = {
     "position": ("GD&T - Position", "⌖", "Position"), "perpendicularity": ("GD&T - Perpendicularity", "⊥", "Perpendicularity"),
     "parallelism": ("GD&T - Parallelism", "∥", "Parallelism"), "flatness": ("GD&T - Flatness", "⏥", "Flatness"),
@@ -37,6 +38,7 @@ GDT_LABEL = {
     "straightness": ("GD&T - Straightness", "⏤", "Straightness"), "cylindricity": ("GD&T - Cylindricity", "⌭", "Cylindricity"),
     "angularity": ("GD&T - Angularity", "∠", "Angularity"), "concentricity": ("GD&T - Concentricity", "◎", "Concentricity"),
     "symmetry": ("GD&T - Symmetry", "⌯", "Symmetry"), "circularity": ("GD&T - Circularity", "○", "Circularity"),
+    "profile_line": ("GD&T - Profile of a line", "⌒", "Profile of line"),
 }
 N_RA = {5: 0.4, 6: 0.8, 7: 1.6, 8: 3.2, 9: 6.3}
 
@@ -215,14 +217,16 @@ def _make_drawing(seed: int, pdf_path: Path, key_path: Path, shift: float) -> di
     used_vals: set[float] = set()
     cc_list: list[tuple[str, dict, str]] = []     # (cc id, row, table description)
 
-    def uniq(lo, hi, step=1.0):
+    def uniq(lo, hi, step=1.0):  # uniq.used is the drawing-wide set of taken values
         while True:
             v = round(rng.randrange(int(lo / step), int(hi / step)) * step, 3)
             if v not in used_vals:
                 used_vals.add(v)
                 return v
 
-    view_names = ["FRONT VIEW", "TOP VIEW", "SIDE VIEW", "SECTION A-A", "SECTION B-B", "DETAIL C  SCALE 2:1"]
+    uniq.used = used_vals
+    view_names = ["FRONT VIEW", "TOP VIEW", "SIDE VIEW", "SECTION A-A", "SECTION B-B", "DETAIL C  SCALE 2:1",
+                  "MAIN VIEW  SCALE 2:1", "DETAIL D  SCALE 3:1"]
     rng.shuffle(view_names)
     for sh in sheets:
         _frame(sh, rng, n_sheets)
@@ -233,20 +237,29 @@ def _make_drawing(seed: int, pdf_path: Path, key_path: Path, shift: float) -> di
                           " | ".join(f"zone {v}" if i == 1 else v for i, v in enumerate(rv))))
         notes.append((sh.no, "Title block", "Title block", " | ".join(sh._title)))
         last = sh.no == n_sheets
-        boxes = [fitz.Rect(90, 117 + shift, 420, 597 + shift), fitz.Rect(450, 117 + shift, 790, 597 + shift)]
+        boxes = [fitz.Rect(66, 117 + shift, 420, 597 + shift), fitz.Rect(450, 117 + shift, 790, 597 + shift)]
         for vbox in boxes:
             label = view_names.pop()
             vname = _view_name(label)
-            lp = fitz.Point(vbox.x0 + 40, vbox.y1 + 25)
-            sh.text(lp, label, 8.5)
+            above = rng.random() < 0.4
+            lp = fitz.Point(vbox.x0 + 40, vbox.y0 - 10 if above else vbox.y1 + 25)
+            if "SCALE" in label and rng.random() < 0.5:
+                # split run: title on one line, SCALE on the next
+                head, scale = label.split("  SCALE ")
+                sh.text(lp, head, 8.5)
+                sh.text(fitz.Point(lp.x - 2, lp.y + 11), f"SCALE {scale}", 8.5)
+                if above:
+                    lp = fitz.Point(lp.x, lp.y - 11)
+            else:
+                sh.text(lp, label, 8.5)
             notes.append((sh.no, vname, "View label", label))
             slots = [fitz.Point(vbox.x0 + 20 + c * 160, vbox.y0 + 30 + r * 62) for r in range(7) for c in range(2)]
             rng.shuffle(slots)
             kinds = ["lin_pm", "stack", "dia_pm", "fit_print", "fit_bare", "radius", "angle", "chamfer",
-                     "basic", "ref", "fcf", "datum", "surface", "thread", "inclined"]
+                     "basic", "ref", "fcf", "datum", "surface", "thread", "inclined", "chamfer_qty", "vert_dim"]
             rng.shuffle(kinds)
             free = list(slots)
-            for kind in kinds[: rng.randint(9, 12)]:
+            for kind in kinds[: rng.randint(11, 14)]:
                 slot = None
                 for cand in free:
                     # Dry run on a scratch page: skip slots whose annotation centre would sit
@@ -269,8 +282,9 @@ def _make_drawing(seed: int, pdf_path: Path, key_path: Path, shift: float) -> di
                     continue
                 rows.append(row)
                 # Critical-characteristic flags on a few dimension / FCF rows (needs the CC table)
-                if last is not None and row["Feature type"] in ("Linear dimension", "Diameter", "Fit (hole)", "Fit (shaft)") \
+                if row["Feature type"] in ("Linear dimension", "Diameter", "Fit (hole)", "Fit (shaft)", "Surface finish") \
                         or row["Feature type"].startswith("GD&T"):
+                    row.setdefault("_cc_desc", row["Text as shown on drawing"])
                     if rng.random() < 0.3 and len(cc_list) < 5:
                         cid = f"CC{len(cc_list) + 1}"
                         r0 = row["_rect"]
@@ -281,6 +295,11 @@ def _make_drawing(seed: int, pdf_path: Path, key_path: Path, shift: float) -> di
                         row["Critical flag"] = cid
                         cc_list.append((cid, row, row["_cc_desc"]))
             _background(sh, vbox, [r["_rect"] for r in rows if r["Sheet"] == sh.no])
+    # Free-text cross-reference on every sheet but the last
+    for sh in sheets[:-1]:
+        sh.text(fitz.Point(830, 300), "GENERAL NOTES AND REVISIONS:", 7)
+        sh.text(fitz.Point(830, 310), f"SEE SHEET {n_sheets}.", 7)
+        notes.append((sh.no, "Free text", "Cross-reference note", f"GENERAL NOTES AND REVISIONS: SEE SHEET {n_sheets}."))
     # Last sheet: general notes, fit table, CC table
     sh = sheets[-1]
     _general_notes(sh, rng, notes)
@@ -298,7 +317,7 @@ def _make_drawing(seed: int, pdf_path: Path, key_path: Path, shift: float) -> di
 def _view_name(label: str) -> str:
     import re
 
-    m = re.match(r"(FRONT|TOP|SIDE) VIEW", label)
+    m = re.match(r"(FRONT|TOP|SIDE|MAIN) VIEW", label)
     if m:
         return f"{m.group(1).capitalize()} view"
     m = re.match(r"SECTION (\w-\w)", label)
@@ -400,6 +419,9 @@ def _gdt_symbol(sh: Sheet, cell: fitz.Rect, kind: str):
         sh.shape.draw_curve(fitz.Point(c.x - h * 1.2, c.y + h * 0.6), fitz.Point(c.x, c.y - h * 1.4), fitz.Point(c.x + h * 1.2, c.y + h * 0.6))
         sh.shape.finish(width=0.7, color=(0, 0, 0))
         L(fitz.Point(c.x - h * 1.2, c.y + h * 0.6), fitz.Point(c.x + h * 1.2, c.y + h * 0.6))
+    elif kind == "profile_line":
+        sh.shape.draw_curve(fitz.Point(c.x - h * 1.2, c.y + h * 0.6), fitz.Point(c.x, c.y - h * 1.4), fitz.Point(c.x + h * 1.2, c.y + h * 0.6))
+        sh.shape.finish(width=0.7, color=(0, 0, 0), closePath=False)
     elif kind == "straightness":
         L(fitz.Point(c.x - h * 1.3, c.y), fitz.Point(c.x + h * 1.3, c.y))
     elif kind == "cylindricity":
@@ -479,6 +501,26 @@ def _place(sh: Sheet, kind: str, p: fitz.Point, view: str, rng: random.Random, u
         s = f"{a:g} × 45°"
         sh.text(p, s, size)
         row = _row(sh, text_rect(p, s, size), view, "Chamfer", s, "°", a, details=f"Chamfer {a:g} mm × 45°")
+    elif kind == "chamfer_qty":
+        q, a, ang = rng.choice([2, 3, 4]), rng.choice([0.3, 0.5, 1]), rng.choice([30, 45])
+        s = f"{q}× {a:g} × {ang}°"
+        sh.text(p, s, size)
+        row = _row(sh, text_rect(p, s, size), view, "Chamfer", s, "°", a, details=f"Chamfer {a:g} mm × {ang}°",
+                   notes=f"Qty {q}")
+    elif kind == "vert_dim":
+        n, t = uniq(20, 120), rng.choice([0.05, 0.1, 0.2])
+        a, b = fitz.Point(p.x + 14, p.y - 20), fitz.Point(p.x + 14, p.y + 45)
+        sh.line(a, b)
+        sh.arrow(a, b)
+        sh.arrow(b, a)
+        s = f"{n:g} ±{t:g}"
+        q = fitz.Point(p.x + 10, p.y + 12 + tw(s, size) / 2)
+        sh.text(q, s, size, 90)
+        r = text_rect(q, s, size, 90)
+        row = _row(sh, r, view, "Linear dimension", s, None, n, t, -t, notes="Rotated (vertical) text")
+        row["_rect"] = r | fitz.Rect(a.x - 4, a.y, b.x + 4, b.y)
+        row["_cc_desc"] = f"{n:g} ±{t:g}"
+        return row
     elif kind == "basic":
         ang = rng.random() < 0.4
         n = rng.choice([30, 45, 60]) if ang else uniq(20, 160)
@@ -501,7 +543,7 @@ def _place(sh: Sheet, kind: str, p: fitz.Point, view: str, rng: random.Random, u
         val = rng.choice([0.01, 0.02, 0.03, 0.05, 0.1, 0.15, 0.2])
         diam = g in ("position", "perpendicularity", "concentricity") and rng.random() < 0.7
         mod = g == "position" and rng.random() < 0.5
-        nd = 0 if g in ("flatness", "straightness", "cylindricity", "circularity") else rng.randint(1, 3)
+        nd = 0 if g in ("flatness", "straightness", "cylindricity", "circularity", "profile_line") else rng.randint(1, 3)
         datums = ["A", "B", "C"][:nd]
         tol = f"{'Ø' if diam else ''}{val:g}" + (" M" if mod else "")
         hgt, sw = 17.0, 20.0
@@ -529,16 +571,28 @@ def _place(sh: Sheet, kind: str, p: fitz.Point, view: str, rng: random.Random, u
         row["_rect"] = frame
         return row | {"_rect": frame}
     elif kind == "datum":
-        letter = rng.choice(["D", "E", "F", "G"])
+        # each datum letter is defined once per drawing (FCFs reference A, B, C)
+        free = [l for l in "ABC" if f"datum:{l}" not in uniq.used]
+        if not free:
+            return None
+        letter = free[0]
+        uniq.used.add(f"datum:{letter}")
         box = fitz.Rect(p.x, p.y - 13, p.x + 17, p.y + 4)
         sh.rect(box)
         sh.text(fitz.Point(box.x0 + 5, box.y1 - 5), letter, 9.5)
-        apex = fitz.Point(box.x1 + 10, (box.y0 + box.y1) / 2)
-        sh.line(fitz.Point(box.x1, apex.y), apex)
-        sh.poly([apex, fitz.Point(apex.x + 8, apex.y - 4.5), fitz.Point(apex.x + 8, apex.y + 4.5)], fill=True)
+        cx, cy = (box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2
+        d = rng.choice(["right", "left", "up", "down"])
+        ux, uy = {"right": (1, 0), "left": (-1, 0), "up": (0, -1), "down": (0, 1)}[d]
+        edge = fitz.Point(cx + ux * 8.5, cy + uy * 8.5)
+        apex = fitz.Point(cx + ux * 18.5, cy + uy * 18.5)
+        sh.line(edge, apex)
+        base = fitz.Point(apex.x + ux * 8, apex.y + uy * 8)
+        px, py = -uy * 4.5, ux * 4.5
+        sh.poly([apex, fitz.Point(base.x + px, base.y + py), fitz.Point(base.x - px, base.y - py)], fill=True)
         r = text_rect(fitz.Point(box.x0 + 5, box.y1 - 5), letter, 9.5)
         row = _row(sh, r, view, "Datum feature", letter, None, letter)
-        row["_rect"] = box | fitz.Rect(apex.x, apex.y - 5, apex.x + 8, apex.y + 5)
+        row["_rect"] = box | fitz.Rect(min(apex.x, base.x) - 5, min(apex.y, base.y) - 5, max(apex.x, base.x) + 5,
+                                       max(apex.y, base.y) + 5)
         return row
     elif kind == "surface":
         k = rng.choice(["Ra", "Rz", "N", "UL"])
@@ -648,6 +702,24 @@ def _cc_table(sh: Sheet, cc_list, notes):
 # answer key
 # =============================================================================
 
+NEAR_MM = 15.0
+TITLE_BLOCK = fitz.Rect(652.0, 658.0, FRAME.x1, FRAME.y1)
+
+
+def _near_border(r: fitz.Rect) -> bool:
+    """Same rule as the extractor: text box within NEAR_MM of the frame or the title block / revision table."""
+    lim = NEAR_MM / MM
+    if min(r.x0 - FRAME.x0, FRAME.x1 - r.x1, r.y0 - FRAME.y0, FRAME.y1 - r.y1) <= lim:
+        return True
+    rev = fitz.Rect(822.0, FRAME.y0, FRAME.x1, FRAME.y0 + 4 * 17.0)
+    for b in (TITLE_BLOCK, rev):
+        dx = max(b.x0 - r.x1, 0, r.x0 - b.x1)
+        dy = max(b.y0 - r.y1, 0, r.y0 - b.y1)
+        if math.hypot(dx, dy) <= lim:
+            return True
+    return False
+
+
 def _write_key(rows: list[dict], notes, key_path: Path):
     from app.services.tvs_extraction_report import _scope_coverage
 
@@ -658,6 +730,8 @@ def _write_key(rows: list[dict], notes, key_path: Path):
         per[r["Sheet"]] += 1
         f = OrderedDict([("Feature ID", f"S{r['Sheet']}-{per[r['Sheet']]:03d}")])
         f.update((k, v) for k, v in r.items() if not k.startswith("_"))
+        if _near_border(r["_zone_rect"]):  # rule is on the annotation's text box
+            f["Notes"] = ((f.get("Notes") or "") + "; Placed near border").strip("; ")
         f["_toleranced"] = r["Feature type"] not in ("Surface finish",) and not r["Feature type"].startswith("GD&T") \
             and (r["Upper tolerance"] is not None or r["Lower tolerance"] is not None)
         f["_tol_kind"] = ""
@@ -682,8 +756,6 @@ def _write_key(rows: list[dict], notes, key_path: Path):
     ws.append(["Scope coverage"])
     ws.append(["Scope item", "Count", "Feature IDs"])
     for label, fids in _scope_coverage(feats, []):
-        if label.startswith("Annotations near"):
-            continue  # layout keeps annotations away from borders; not asserted
         ws.append([label, len(fids), ", ".join(fids)])
     ws2 = wb.create_sheet("Expected Extraction")
     keys = [k for k in feats[0] if not k.startswith("_")] if feats else []
