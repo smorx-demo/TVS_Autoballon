@@ -38,7 +38,7 @@ def anthropic_convert_enabled() -> bool:
 def _model() -> str:
     return os.environ.get(
         "ANTHROPIC_CONVERT_MODEL",
-        os.environ.get("ANTHROPIC_VERIFY_MODEL", "claude-sonnet-4-20250514"),
+        os.environ.get("ANTHROPIC_VERIFY_MODEL", "claude-sonnet-5-5"),
     ).strip()
 
 

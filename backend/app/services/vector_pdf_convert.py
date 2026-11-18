@@ -117,29 +117,25 @@ def _dxf_manifest(src: Path) -> dict:
 
 def _dxf_to_pdf(src: Path, dest: Path) -> dict:
     try:
-        import ezdxf
-        from ezdxf.addons.drawing import Frontend, RenderContext
-        from ezdxf.addons.drawing.pymupdf import PyMuPdfBackend
+        import ezdxf  # noqa: F401
     except ImportError as e:
         raise ConversionError(
             "DXF conversion requires ezdxf (pip install ezdxf)",
             hint="Add ezdxf to backend requirements and redeploy.",
         ) from e
+    from app.services.dxf_to_pdf import dxf_to_pdf
 
-    doc = ezdxf.readfile(str(src))
-    msp = doc.modelspace()
-    backend = PyMuPdfBackend()
-    Frontend(RenderContext(doc), backend).draw_layout(msp)
-    backend.save(dest)
+    # Native renderer: real PDF text (readable dimensions), true curves, line weights / types,
+    # one page per sheet. (ezdxf's own drawing add-on outputs text as glyph outlines.)
+    try:
+        meta = dxf_to_pdf(src, dest)
+    except Exception as e:
+        raise ConversionError(f"DXF could not be converted: {e}", hint="Check the DXF opens in a CAD viewer.") from e
     manifest = _dxf_manifest(src)
     manifest_path = dest.with_suffix(dest.suffix + ".manifest.json")
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    return {
-        "converter": "ezdxf_pymupdf",
-        "pages": _page_count(dest),
-        "vector_hint": True,
-        "manifest": manifest,
-    }
+    meta["manifest"] = manifest
+    return meta
 
 
 def _run_freecad_step_to_dxf(step: Path, dxf: Path) -> dict:
@@ -290,7 +286,13 @@ def convert_to_vector_pdf(
     except (ConversionError, Exception) as exc:
         if anthropic_convert_enabled() and kind in ai_kinds:
             log.warning("Mechanical %s convert failed (%s); trying Anthropic", kind, exc)
-            meta = anthropic_fallback_convert(src, dest, kind)
+            try:
+                meta = anthropic_fallback_convert(src, dest, kind)
+            except Exception as ai_exc:
+                raise ConversionError(
+                    f"{kind.upper()} conversion failed: {exc}. AI fallback also failed: {str(ai_exc)[:300]}",
+                    hint="Fix the converter dependency, or check ANTHROPIC_API_KEY / ANTHROPIC_VERIFY_MODEL.",
+                ) from ai_exc
             meta["mechanical_error"] = str(exc)[:500]
         elif isinstance(exc, ConversionError):
             raise

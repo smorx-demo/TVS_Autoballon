@@ -150,7 +150,7 @@ def classify_with_claude(
     candidates: list[dict[str, Any]],
     *,
     api_key: str,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = "claude-sonnet-5-5",
     few_shot: list[dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     if not candidates:
@@ -203,7 +203,7 @@ def classify_candidates(
         return classify_with_claude(
             candidates,
             api_key=key,
-            model=model or "claude-sonnet-4-20250514",
+            model=model or "claude-sonnet-5-5",
             few_shot=few_shot,
         )
     raise ValueError(f"Unknown AI provider: {provider}")

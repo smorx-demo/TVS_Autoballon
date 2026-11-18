@@ -12,3 +12,4 @@ psycopg[binary]==3.3.4
 python-dotenv==1.0.1
 boto3==1.37.38
 ezdxf==1.4.2
+Pillow==11.3.0

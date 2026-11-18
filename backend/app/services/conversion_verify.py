@@ -28,7 +28,7 @@ def verify_enabled() -> bool:
 
 
 def _anthropic_model() -> str:
-    return os.environ.get("ANTHROPIC_VERIFY_MODEL", "claude-sonnet-4-20250514").strip()
+    return os.environ.get("ANTHROPIC_VERIFY_MODEL", "claude-sonnet-5-5").strip()
 
 
 def _render_page_png(pdf: Path, page: int = 0, scale: float = 1.25) -> bytes:
