@@ -229,7 +229,8 @@ def _make_drawing(seed: int, pdf_path: Path, key_path: Path, shift: float) -> di
         notes.append((sh.no, "Revision table", "Heading", "REVISIONS"))
         notes.append((sh.no, "Revision table", "Heading", "REV | ZONE | DESCRIPTION | DATE | BY"))
         for rv in sh._revs:
-            notes.append((sh.no, "Revision table", f"Revision {rv[0]}", " | ".join(rv)))
+            notes.append((sh.no, "Revision table", f"Revision {rv[0]}",
+                          " | ".join(f"zone {v}" if i == 1 else v for i, v in enumerate(rv))))
         notes.append((sh.no, "Title block", "Title block", " | ".join(sh._title)))
         last = sh.no == n_sheets
         boxes = [fitz.Rect(90, 117 + shift, 420, 597 + shift), fitz.Rect(450, 117 + shift, 790, 597 + shift)]
@@ -640,7 +641,7 @@ def _cc_table(sh: Sheet, cc_list, notes):
         where = f"S{row['Sheet']} / {row['View'].upper()}"
         for i, t in enumerate([cid, desc, where]):
             sh.text(fitz.Point(cols[i] + 4, y0 + j * rh + 12), t, 7)
-        notes.append((sh.no, "CC table", "Critical characteristic", f"{cid} | {desc} | {where}"))
+        notes.append((sh.no, "CC table", "Critical characteristic", f"{cid}: {desc} ({where})"))
 
 
 # =============================================================================
