@@ -293,6 +293,7 @@ class Feature:
     view: str = ""
     kind: str = ""                 # internal: fcf, datum, surface, thread, dim
     meta: dict = field(default_factory=dict)
+    balloon: int = 0               # balloon number (balloon_numbering); read by every output, never renumbered
 
     @property
     def center(self) -> fitz.Point:
@@ -1941,6 +1942,9 @@ def _extract(doc: fitz.Document) -> Extraction:
             _LOG.warning("TVS extractor: datum %s referenced by an FCF is defined %d times", d, defined.get(d, 0))
 
     all_notes.sort(key=lambda n: (n.sheet, n.rect.y0, n.rect.x0))
+    from app.services.balloon_numbering import assign_balloon_numbers
+
+    assign_balloon_numbers(all_features, doc)
     return Extraction(all_features, all_notes, len(pages), [p.rect for p in pages], frames_by_sheet, blocks_by_sheet,
                       orphans)
 

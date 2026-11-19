@@ -94,7 +94,10 @@ def test_workbook_layout(tmp_path):
     ex = wb["Extraction"]
     assert [c.value for c in ex[1]] == [name for name, _ in EXTRACTION_COLUMNS]
     assert ex.freeze_panes == "A2" and ex.auto_filter.ref
-    rows = {r[0]: r for r in ex.iter_rows(min_row=2, values_only=True)}
+    # column A = Balloon No.; the remaining columns keep their order (index + 1)
+    all_rows = list(ex.iter_rows(min_row=2, values_only=True))
+    assert [r[0] for r in all_rows] == [1, 2, 3]
+    rows = {r[1]: r[1:] for r in all_rows}
     assert set(rows) == {"S1-001", "S1-002", "S2-001"}
     r1 = rows["S1-001"]
     assert r1[6:13] == ("Diameter", "Ø", 120, 0.2, -0.2, 120.2, 119.8)

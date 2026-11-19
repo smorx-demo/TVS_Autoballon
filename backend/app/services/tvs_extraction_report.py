@@ -32,6 +32,7 @@ HEADER_FONT = Font(bold=True, color="FFFFFF")
 WRAP = Alignment(wrap_text=True, vertical="top")
 
 EXTRACTION_COLUMNS: list[tuple[str, float]] = [
+    ("Balloon No.", 8),
     ("Feature ID", 10),
     ("Sheet", 7),
     ("Zone", 7),
@@ -812,9 +813,18 @@ def _header(ws, columns: list[tuple[str, float]]) -> None:
     ws.freeze_panes = "A2"
 
 
+def _sheet_no(v) -> int:
+    """Drawing sheet number; 0 for non-sheet locations such as '3D'."""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _scope_coverage(features: list[dict], notes: list[dict]) -> list[tuple[str, list[str]]]:
+    """Scope item -> balloon numbers (Feature IDs for rows without a balloon number)."""
     def ids(pred) -> list[str]:
-        return [f["Feature ID"] for f in features if pred(f)]
+        return [str(f.get("Balloon No.") or f["Feature ID"]) for f in features if pred(f)]
 
     def txt(f) -> str:
         return str(f["Text as shown on drawing"])
@@ -835,7 +845,7 @@ def _scope_coverage(features: list[dict], notes: list[dict]) -> list[tuple[str, 
         hi, lo = lims(f)
         return toleranced_dim(f) and (hi == 0 or lo == 0)
 
-    max_sheet = max((int(f["Sheet"]) for f in features), default=1)
+    max_sheet = max((_sheet_no(f["Sheet"]) for f in features), default=1)
     return [
         ("Dimensions with tolerances", ids(toleranced_dim)),
         ("Ø diameter symbol", ids(lambda f: "Ø" in txt(f) and not is_gdt(f))),
@@ -857,7 +867,7 @@ def _scope_coverage(features: list[dict], notes: list[dict]) -> list[tuple[str, 
         ("Bracketed (reference) dimensions", ids(lambda f: f["Boxed / reference flag"] == "Bracketed (reference)")),
         ("Annotations near border / title block", ids(lambda f: bool(re.search(r"near .*(border|title block)", str(f["Notes"] or ""))))),
         ("Critical characteristics (CC)", ids(lambda f: f["Critical flag"] not in {"-", "", None})),
-        (f"Items on sheet {'2' if max_sheet <= 2 else '2+'} (multi-sheet mapping)", ids(lambda f: int(f["Sheet"]) > 1)),
+        (f"Items on sheet {'2' if max_sheet <= 2 else '2+'} (multi-sheet mapping)", ids(lambda f: _sheet_no(f["Sheet"]) > 1)),
     ]
 
 
@@ -883,13 +893,19 @@ def _extraction_rows(src_pdf: Path, sheets: set[int] | None = None,
             return True
 
         feats = [f for f in ext.features if keep(f.sheet, f.rect)]
+        # Feature IDs keep their established per-sheet order; rows are listed by balloon number
+        # (assigned once by the extractor, the same number the ballooned PDF shows)
         feats.sort(key=lambda f: (f.sheet, -round(f.center.y / 40), f.center.x))
+        fid: dict[int, str] = {}
         per_sheet: Counter = Counter()
+        for f in feats:
+            per_sheet[f.sheet] += 1
+            fid[id(f)] = f"S{f.sheet}-{per_sheet[f.sheet]:03d}"
+        feats.sort(key=lambda f: f.balloon)
         rows: list[dict] = []
         for f in feats:
             ctx = ctxs[f.sheet]
             c = f.center
-            per_sheet[f.sheet] += 1
             nom = f.nominal if isinstance(f.nominal, (int, float)) else None
             max_lim = min_lim = None
             if f.toleranced and nom is not None and f.kind == "dim":
@@ -902,7 +918,8 @@ def _extraction_rows(src_pdf: Path, sheets: set[int] | None = None,
             datums = (list(f.datums) + ["", "", ""])[:3]
             lo, hi = f.lower, f.upper
             rows.append(OrderedDict([
-                ("Feature ID", f"S{f.sheet}-{per_sheet[f.sheet]:03d}"),
+                ("Balloon No.", f.balloon),
+                ("Feature ID", fid[id(f)]),
                 ("Sheet", f.sheet),
                 ("Zone", ctx.zone(c.x, c.y)),
                 ("X (mm)", round((c.x - ctx.rect.x0) * _MM, 1)),
@@ -950,17 +967,44 @@ def _rect_gap(a: fitz.Rect, b: fitz.Rect) -> float:
 
 
 _TABLE_AREAS = {"Revision table", "Fit limits table", "CC table", "Table"}
+_TITLE_KEYS = ("part_number", "revision", "part_name", "material", "mass")
+
+
+def _title_fields(src_pdf: Path, meta: dict) -> dict[str, str]:
+    """Title-block fields read from the drawing (cell by cell); job meta fills what the drawing lacks.
+    A missing field stays blank — a label is never used as a value."""
+    from app.services.title_block_extract import _valid_value, extract_title_block_meta
+
+    try:
+        found = extract_title_block_meta(Path(src_pdf))
+    except Exception:
+        found = {}
+    out = {}
+    for k in _TITLE_KEYS:
+        v = str(found.get(k) or "").strip()
+        if not v:
+            m = str(meta.get(k) or "").strip()
+            v = m if m and _valid_value(k, m) else ""
+        out[k] = v
+    return out
 
 
 def build_tvs_extraction_xlsx(meta: dict, src_pdf: Path, report_rows: list[dict] | None = None,
                               balloons: list[dict] | None = None, *, page: int | None = None,
-                              area: tuple[int, fitz.Rect] | None = None) -> bytes:
+                              area: tuple[int, fitz.Rect] | None = None, prepared: dict | None = None) -> bytes:
     """
     TVS extraction report for a drawing. Features and notes come from the drawing extractor
     (tvs_extractor); `page` / `area` restrict the report to one sheet or a work area.
     `report_rows` / `balloons` are accepted for API compatibility and are not used.
+    `prepared` (STEP PMI report): rows / notes built elsewhere plus Summary extras — keys
+    features, notes, sheet_count, size, orphans, title (dict), ident, coordinates, sections
+    [(title, header, rows)].
     """
-    features, notes, sheet_count, size, orphans = _extraction_rows(Path(src_pdf), {page} if page else None, area)
+    if prepared is not None:
+        features, notes = prepared["features"], prepared["notes"]
+        sheet_count, size, orphans = prepared.get("sheet_count", 0), prepared.get("size", ""), prepared.get("orphans", [])
+    else:
+        features, notes, sheet_count, size, orphans = _extraction_rows(Path(src_pdf), {page} if page else None, area)
 
     wb = Workbook()
     # --- Summary ---
@@ -969,18 +1013,25 @@ def build_tvs_extraction_xlsx(meta: dict, src_pdf: Path, report_rows: list[dict]
     ws.column_dimensions["A"].width = 48
     ws.column_dimensions["B"].width = 10
     ws.column_dimensions["C"].width = 120
+    tb = (prepared or {}).get("title") or _title_fields(Path(src_pdf), meta)
     ident = " ".join(
         p for p in [
-            f"Drawing {meta.get('part_number')}" if meta.get("part_number") else "",
-            f"rev {meta.get('revision')}" if meta.get("revision") else "",
-            f"- {meta.get('part_name')}" if meta.get("part_name") else "",
+            f"Drawing {tb['part_number']}" if tb["part_number"] else "",
+            f"rev {tb['revision']}" if tb["revision"] else "",
+            f"- {tb['part_name']}" if tb["part_name"] else "",
         ] if p
     ) or f"Drawing {((meta.get('files') or [{}])[0]).get('name', '') or Path(src_pdf).stem}"
     ws.append(["TVS extraction report"])
     ws["A1"].font = Font(bold=True, size=14)
-    ws.append([f"{ident}, {sheet_count} sheet(s){', ' + size if size else ''}."])
-    ws.append(["Coordinates: mm from the lower-left corner of the sheet, at the centre of the annotation. "
-               "Zones: sheet border grid (letter row + number column)."])
+    if prepared is not None and prepared.get("ident"):
+        ident = f"{ident} {prepared['ident']}" if tb.get("part_number") else prepared["ident"]
+    ws.append([f"{ident}, {sheet_count} sheet(s){', ' + size if size else ''}." if sheet_count else f"{ident}."])
+    ws.append([f"Material: {tb['material']}. Mass: {tb['mass']}."])
+    if prepared is not None and prepared.get("coordinates"):
+        ws.append([prepared["coordinates"]])
+    else:
+        ws.append(["Coordinates: mm from the lower-left corner of the sheet, at the centre of the annotation. "
+                   "Zones: sheet border grid (letter row + number column)."])
     ws.append([])
     ws.append(["Features by type"])
     ws.cell(row=ws.max_row, column=1).font = Font(bold=True)
@@ -997,7 +1048,7 @@ def build_tvs_extraction_xlsx(meta: dict, src_pdf: Path, report_rows: list[dict]
     ws.append(["Sheet", "Count"])
     for c in ws[ws.max_row][:2]:
         c.font = Font(bold=True)
-    for sheet, n in sorted(Counter(f["Sheet"] for f in features).items()):
+    for sheet, n in sorted(Counter(f["Sheet"] for f in features).items(), key=lambda kv: (_sheet_no(kv[0]) == 0, _sheet_no(kv[0]), str(kv[0]))):
         ws.append([sheet, n])
     # Table title / column-header rows are structure, not note items (they stay in the Notes tab as Headings)
     n_items = sum(1 for n in notes if not (n["type"] == "Heading" and n["view"] in _TABLE_AREAS))
@@ -1005,13 +1056,22 @@ def build_tvs_extraction_xlsx(meta: dict, src_pdf: Path, report_rows: list[dict]
     ws.append([])
     ws.append(["Scope coverage (from the scope document)"])
     ws.cell(row=ws.max_row, column=1).font = Font(bold=True)
-    ws.append(["Scope item", "Count", "Feature IDs"])
+    ws.append(["Scope item", "Count", "Balloon Nos."])
     for c in ws[ws.max_row][:3]:
         c.font = Font(bold=True)
     for label, fids in _scope_coverage(features, notes):
         ws.append([label, len(fids), ", ".join(fids)])
     ws.append(["Notes & textual information", n_items, "See Notes tab"])
     ws.append(["Unaccounted text runs", len(orphans), "; ".join(f"S{s}: {t}" for s, t in orphans) or "none"])
+    for title, header, rows in (prepared or {}).get("sections", []):
+        ws.append([])
+        ws.append([title])
+        ws.cell(row=ws.max_row, column=1).font = Font(bold=True)
+        ws.append(header)
+        for c in ws[ws.max_row][:len(header)]:
+            c.font = Font(bold=True)
+        for r in rows:
+            ws.append(list(r))
     for row in ws.iter_rows(min_row=2):
         for c in row:
             c.alignment = Alignment(wrap_text=True, vertical="top")

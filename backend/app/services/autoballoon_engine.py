@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import io
+import dataclasses
 import math
 import os
 import re
@@ -2711,48 +2712,9 @@ def renumber_characteristics(
                 key=lambda c: (round(float(c.y), 1), round(float(c.x), 1)),
             )
             for i, c in enumerate(ordered, start=1):
-                out.append(
-                    Characteristic(
-                        balloon=i,
-                        page=c.page,
-                        text=c.text,
-                        x=c.x,
-                        y=c.y,
-                        width=c.width,
-                        height=c.height,
-                        category=c.category,
-                        pattern=c.pattern,
-                        family=c.family,
-                        bx=c.bx,
-                        by=c.by,
-                        tx=c.tx,
-                        ty=c.ty,
-                        arrow_size=c.arrow_size,
-                    )
-                )
+                out.append(dataclasses.replace(c, balloon=i))
         return out
-    out: list[Characteristic] = []
-    for i, c in enumerate(chars, start=1):
-        out.append(
-            Characteristic(
-                balloon=i,
-                page=c.page,
-                text=c.text,
-                x=c.x,
-                y=c.y,
-                width=c.width,
-                height=c.height,
-                category=c.category,
-                pattern=c.pattern,
-                family=c.family,
-                bx=c.bx,
-                by=c.by,
-                tx=c.tx,
-                ty=c.ty,
-                arrow_size=c.arrow_size,
-            )
-        )
-    return out
+    return [dataclasses.replace(c, balloon=i) for i, c in enumerate(chars, start=1)]
 
 
 # Per-run cache: dense CAD sheets call get_drawings() once (~2s), not per tile.
@@ -3515,7 +3477,7 @@ _EXTRACTOR_CATEGORY = {
 }
 
 
-def extractor_characteristics(doc: fitz.Document) -> list[Characteristic]:
+def extractor_characteristics(doc: fitz.Document, number_of=None) -> list[Characteristic]:
     """
     Balloon candidates from the drawing-level extractor (same feature list as the TVS
     extraction report). Returns [] when the extractor does not apply, so callers fall back to
@@ -3532,14 +3494,32 @@ def extractor_characteristics(doc: fitz.Document) -> list[Characteristic]:
         feats = _extract(doc).features
     except Exception:
         return []
-    feats = sorted(feats, key=lambda f: (f.sheet, round(f.rect.y0 / 20), f.rect.x0))
+    # Balloon numbers were assigned once by the extractor (balloon_numbering); never renumber here.
+    # number_of(sheet, point) supplies them instead when the sheet stands for another source whose
+    # report owns the numbering (STEP PMI rendered as a sheet).
+    if number_of is not None:
+        for f in feats:
+            n = number_of(f.sheet, f.center)
+            if n is not None:
+                f.balloon = int(n)
+    feats = sorted(feats, key=lambda f: f.balloon)
+    try:
+        from .balloon_layout import layout_balloons
+        places = layout_balloons(doc, feats)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("balloon layout failed; using default placement")
+        places = {}
     out = []
-    for i, f in enumerate(feats, start=1):
+    for f in feats:
         cat = "gdt" if f.ftype.startswith("GD&T") else _EXTRACTOR_CATEGORY.get(f.ftype, "feature")
+        pl = places.get(f.balloon)
         out.append(Characteristic(
-            balloon=i, page=f.sheet, text=f.text, x=float(f.rect.x0), y=float(f.rect.y0),
+            balloon=f.balloon, page=f.sheet, text=f.text, x=float(f.rect.x0), y=float(f.rect.y0),
             width=float(f.rect.width), height=float(f.rect.height),
             category=cat, pattern=f"tvs_{f.kind or cat}", family="generic",
+            bx=float(pl.center.x) if pl else None, by=float(pl.center.y) if pl else None,
+            tx=float(pl.tip.x) if pl else None, ty=float(pl.tip.y) if pl else None,
         ))
     return out
 
@@ -3557,6 +3537,7 @@ def balloon_pdf(
     ai_model: str | None = None,
     use_ocr: bool | None = None,
     numbering_mode: str = "continuous",
+    balloon_numbers=None,
 ) -> tuple[bytes, list[Characteristic], list[dict], dict]:
     """
     Balloon a drawing PDF.
@@ -3580,7 +3561,8 @@ def balloon_pdf(
         }
     src = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
-        chars = extractor_characteristics(src)
+        chars = extractor_characteristics(src, balloon_numbers)
+        from_extractor = bool(chars)
         if chars:
             pass_log = [{"pass": 1, "level": 0, "added": len(chars), "total": len(chars), "mode": "tvs_extractor"}]
         else:
@@ -3592,7 +3574,11 @@ def balloon_pdf(
                 use_ocr=bool(use_ocr),
             )
         mode = "per_page" if str(numbering_mode).strip().lower() == "per_page" else "continuous"
-        chars = renumber_characteristics(chars, mode=mode)
+        if from_extractor:
+            # Extractor numbers are shared with the Excel report: keep them; additions append N+1..
+            mode = "continuous"
+        else:
+            chars = renumber_characteristics(chars, mode=mode)
         if use_learning:
             learned = apply_learned_dimensions(src, chars)
             if learned:
@@ -4062,8 +4048,10 @@ def draw_balloons(
             dx, dy = tx - cx, ty - cy
             dist = math.hypot(dx, dy) or 1.0
             ux, uy = dx / dist, dy / dist
-            # Keep a short gap so arrow doesn't sit under the number
-            tip_gap = max(2.0, min(c.width, c.height) * 0.15 + 1.5)
+            # Keep a short gap so arrow doesn't sit under the number; a target on the annotation's
+            # edge (outside its text box) is already clear of the text
+            inside = c.x + 0.5 < tx < c.x + c.width - 0.5 and c.y + 0.5 < ty < c.y + c.height - 0.5
+            tip_gap = max(2.0, min(c.width, c.height) * 0.15 + 1.5) if inside else 0.0
             start = fitz.Point(cx + ux * (r + 0.4), cy + uy * (r + 0.4))
             tip = fitz.Point(tx - ux * tip_gap, ty - uy * tip_gap)
 
