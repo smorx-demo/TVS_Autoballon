@@ -452,7 +452,7 @@ def _table_kind(rows: list[list[str]]) -> str:
 
 VIEW_RE = re.compile(
     r"^\s*(?:"
-    r"(?P<named>MAIN|FRONT|TOP|BOTTOM|SIDE|LEFT|RIGHT|REAR|BACK|END|PLAN|ISOMETRIC|AUXILIARY|PARTIAL|ENLARGED"
+    r"(?P<named>MODEL|MAIN|FRONT|TOP|BOTTOM|SIDE|LEFT|RIGHT|REAR|BACK|END|PLAN|ISOMETRIC|AUXILIARY|PARTIAL|ENLARGED"
     r"|EXPLODED|SECTIONAL|ELEVATION)\s+VIEW"
     r"|SECTION\s+(?P<sec>[A-Z]{1,2}\s*-\s*[A-Z]{1,2})"
     r"|DETAIL\s+(?P<det>[A-Z]{1,2})\b"
@@ -908,7 +908,7 @@ def detect_threads(pd: PageData, sheet: int, exclude: list[fitz.Rect]) -> list[F
         def _continues(o: TLine) -> bool:
             if o.used or not o.horizontal or o.size > ln.size * 1.05:
                 return False
-            if not 0 <= o.rect.y0 - last.rect.y1 <= last.size * 0.9:
+            if not -0.25 * last.size <= o.rect.y0 - last.rect.y1 <= last.size * 0.9:
                 return False
             aligned = abs(o.rect.x0 - last.rect.x0) < 8 or abs(o.rect.x1 - last.rect.x1) < 8
             return aligned and bool(re.match(r"^(?:Ø|↧|CSK|CBORE|EQ|THRU|\d)", o.text))

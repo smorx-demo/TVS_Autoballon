@@ -246,6 +246,11 @@ def _mechanical_convert(
     if kind == "dxf":
         return _dxf_to_pdf(src, dest)
     if kind == "step":
+        from app.services.step_pmi import has_semantic_pmi, step_pmi_to_pdf
+
+        if has_semantic_pmi(src):
+            # AP242 semantic PMI: draw every characteristic as on a 2D drawing (no FreeCAD / AI needed)
+            return step_pmi_to_pdf(src, dest)
         use_ai = os.environ.get("SMORX_STEP_USE_ANTHROPIC", "0").strip().lower() in {
             "1",
             "true",
