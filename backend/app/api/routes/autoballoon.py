@@ -31,6 +31,30 @@ def _job_dir(job_id: str) -> Path:
     return d
 
 
+def _step_report_for_job(job_id: str, meta: dict, jd: Path, step_src: Path, pair_job: str | None = None):
+    """STEP PMI report for a STEP job, paired with a 2D drawing job when one exists: the explicit
+    pair_job, else the pairing recorded at ballooning, else a job with the same drawing / part number.
+    Records the pairing in meta (step_pair_job, '' = STEP-only)."""
+    from app.services.step_report import build_step_report, find_paired_job, job_drawing_source
+
+    drawing = None
+    pid = pair_job if pair_job is not None else meta.get("step_pair_job")
+    if pid:
+        pmeta_path = JOBS / pid / "meta.json"
+        if pmeta_path.is_file():
+            drawing = job_drawing_source(JOBS / pid, json.loads(pmeta_path.read_text(encoding="utf-8")))
+        if drawing is None and pair_job:
+            raise HTTPException(status_code=404, detail=f"Job {pair_job} has no 2D drawing to pair with")
+    elif pid is None:
+        hit = find_paired_job(step_src, JOBS, exclude=job_id)
+        if hit:
+            pid, drawing = hit
+    meta["step_pair_job"] = pid if drawing is not None else ""
+    rep = build_step_report(step_src, drawing)
+    meta["step_report_mode"] = rep.mode
+    return rep, drawing
+
+
 def _apply_zone_refs(src: Path, balloons: list[dict]) -> dict[int, str]:
     try:
         from app.services.border_grid import zone_references_for_balloons, _dim_reference_point
@@ -917,6 +941,20 @@ def run_balloon(
     ai_on = os.environ.get("SMORX_AI_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}
     # Multi-page PDF: detect + draw on every page; output stays one combined file
     page_count = _pdf_page_count(src)
+    # STEP AP242 PMI: balloon numbers come from the STEP report (drawing numbers when paired)
+    step_numbers = None
+    try:
+        from app.services.step_report import balloon_number_lookup, job_step_source
+
+        step_src = job_step_source(jd, meta)
+        if step_src is not None:
+            meta.pop("step_pair_job", None)  # re-detect the pairing on every ballooning run
+            rep, _drawing = _step_report_for_job(job_id, meta, jd, step_src)
+            step_numbers = balloon_number_lookup(rep)
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("STEP report numbering failed for job %s; using sheet numbering", job_id)
     # Default 1 pass; dense sheets skip slow tile sweeps automatically.
     t_detect = time.perf_counter()
     out_pdf, chars, pass_log, drawing_extraction = balloon_pdf(
@@ -928,6 +966,7 @@ def run_balloon(
         ai_fallback=ai_on,
         use_ocr=needs_ocr,
         numbering_mode=mode,
+        balloon_numbers=step_numbers,
     )
     log.info(
         "balloon detect job=%s %.1fs balloons=%d pass_log=%s",
@@ -2103,9 +2142,11 @@ def download_tvs_extraction(
     area_y: float | None = Query(None),
     area_w: float | None = Query(None, gt=0),
     area_h: float | None = Query(None, gt=0),
+    pair_job: str | None = Query(None, description="STEP jobs: 2D drawing job to pair with"),
     user: dict = Depends(require_perm("read")),
 ):
     """TVS extraction report (Excel): Summary + Extraction + Notes, answer-key layout."""
+    from app.services.step_report import job_step_source, step_report_xlsx
     from app.services.tvs_extraction_report import build_tvs_extraction_xlsx
 
     meta = _load_meta(job_id)
@@ -2116,6 +2157,25 @@ def download_tvs_extraction(
     src = jd / files[int(meta.get("active_file") or 0)]["path"]
     if not src.is_file():
         raise HTTPException(status_code=404, detail="Source PDF missing")
+    step_src = job_step_source(jd, meta)
+    if step_src is not None:
+        # STEP AP242 PMI: report from the STEP file itself (paired with the part's drawing when available)
+        try:
+            rep, drawing = _step_report_for_job(job_id, meta, jd, step_src, pair_job)
+            xlsx = step_report_xlsx(rep, meta, drawing)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"STEP extraction report failed: {e}") from e
+        _save_meta_local(job_id, meta)
+        out = jd / "TVS_extraction_report.xlsx"
+        out.write_bytes(xlsx)
+        return FileResponse(
+            out,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename=f"{job_id}_TVS_extraction_report.xlsx",
+            headers={"Cache-Control": "no-store"},
+        )
     suffix = _report_filter_suffix(page, area_page, area_w, area_h)
     rows = _filtered_report_rows(
         meta,

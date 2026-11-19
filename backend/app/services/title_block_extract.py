@@ -171,6 +171,8 @@ def _valid_value(key: str, val: str) -> bool:
         return False
     if re.search(r"(?i)error|no\s*reference", v):
         return False
+    if is_label_text(v):
+        return False
     if key == "part_number":
         if len(v) > 64:
             return False
@@ -214,6 +216,104 @@ def _valid_value(key: str, val: str) -> bool:
         if re.match(r"(?i)^(supplier|customer|company|vendor|systems\s+limited)$", v):
             return False
     return True
+
+
+# ----------------------------------------------------------------------------- cell-based title block
+# A title block is a ruled table whose cells hold a small label (TITLE, MATERIAL, UNITS / MASS …)
+# above a value. Reading cell by cell keeps multi-word values whole and never takes a neighbouring
+# label for a value.
+
+_LABEL_WORD = re.compile(
+    r"(?i)^(?:TITLE|PART\s*NAME|DESCRIPTION|NOMENCLATURE|NAME\s*OF\s*PART|COMPONENT\s*NAME|ITEM\s*NAME|"
+    r"DRAWING\s*(?:NO\.?|NUMBER)|DWG\.?\s*(?:NO\.?|NUMBER)?|DRG\.?\s*(?:NO\.?|NUMBER)?|PART\s*(?:NO\.?|NUMBER)|"
+    r"P\s*/\s*N|CUSTOMER\s*P\s*/\s*N|CUSTOMER(?:\s*NAME)?|MATERIAL|MATL\.?|MASS|WEIGHT|WT\.?|UNITS?|SCALE|SIZE|"
+    r"SHEET|SHT\.?|REV(?:ISION)?\.?|PROJECTION|GENERAL\s*TOLERANCES?|TOLERANCES?|DRAWN(?:\s*BY)?|CHECKED(?:\s*BY)?|"
+    r"APPROVED(?:\s*BY)?|DATE|FINISH|TREATMENT|SURFACE\s*FINISH)\s*:?$"
+)
+
+_CELL_KEYS: list[tuple[str, re.Pattern[str]]] = [
+    ("part_name", re.compile(r"(?i)^(?:TITLE|PART\s*NAME|DESCRIPTION|NOMENCLATURE|NAME\s*OF\s*PART|COMPONENT\s*NAME|ITEM\s*NAME)$")),
+    ("part_number", re.compile(r"(?i)^(?:DRAWING|DWG\.?|DRG\.?|PART)\s*(?:NO\.?|NUMBER)$")),
+    ("material", re.compile(r"(?i)^(?:MATERIAL|MATL\.?)$")),
+    ("mass", re.compile(r"(?i)^(?:MASS|WEIGHT|WT\.?)$")),
+    ("revision", re.compile(r"(?i)^REV(?:ISION)?\.?$")),
+    ("finish", re.compile(r"(?i)^(?:FINISH|SURFACE\s*FINISH|TREATMENT)$")),
+]
+
+
+def is_label_text(text: str) -> bool:
+    """True when the text is only title-block label words (e.g. 'UNITS / MASS', 'P/N')."""
+    t = _clean(text)
+    if not t:
+        return False
+    if _LABEL_WORD.match(t):
+        return True
+    parts = [x for x in re.split(r"\s+/\s+", t) if x]
+    return len(parts) > 1 and all(_LABEL_WORD.match(x) for x in parts)
+
+
+def _mass_value(v: str) -> str:
+    m = re.search(r"(\d+(?:[.,]\d+)?)\s*(kg|g|lbs?|t)\b", v, re.I)
+    return f"{m.group(1)} {m.group(2)}" if m else v
+
+
+def title_block_cells(page: fitz.Page) -> dict[str, str]:
+    """Label -> value read cell by cell from ruled title blocks ({} when none is found)."""
+    try:
+        from app.services.tvs_extractor import PageData, _find_tables, _inner_frame
+    except Exception:
+        return {}
+    pd = PageData(page, page.number)
+    frame = _inner_frame(pd)
+    out: dict[str, str] = {}
+    for t in _find_tables(pd, frame):
+        if t.kind != "title":
+            continue
+        area = t.rect + (-1, -1, 1, 1)
+        segs = [sg for sg in pd.segs if (sg.is_h or sg.is_v) and area.contains(sg.a) and area.contains(sg.b)]
+        vs = [sg for sg in segs if sg.is_v]
+        hs = [sg for sg in segs if sg.is_h]
+
+        def cell_of(c: fitz.Point) -> tuple:
+            x0 = max([sg.a.x for sg in vs if sg.a.x <= c.x and min(sg.a.y, sg.b.y) <= c.y <= max(sg.a.y, sg.b.y)], default=t.rect.x0)
+            x1 = min([sg.a.x for sg in vs if sg.a.x >= c.x and min(sg.a.y, sg.b.y) <= c.y <= max(sg.a.y, sg.b.y)], default=t.rect.x1)
+            y0 = max([sg.a.y for sg in hs if sg.a.y <= c.y and min(sg.a.x, sg.b.x) <= c.x <= max(sg.a.x, sg.b.x)], default=t.rect.y0)
+            y1 = min([sg.a.y for sg in hs if sg.a.y >= c.y and min(sg.a.x, sg.b.x) <= c.x <= max(sg.a.x, sg.b.x)], default=t.rect.y1)
+            return round(x0, 1), round(y0, 1), round(x1, 1), round(y1, 1)
+
+        cells: dict[tuple, list] = {}
+        for ln in t.lines:
+            if ln.horizontal:
+                cells.setdefault(cell_of(ln.center), []).append(ln)
+        for lines in cells.values():
+            lines.sort(key=lambda l: (round(l.rect.y0), l.rect.x0))
+            top, rest = lines[0], lines[1:]
+            small = bool(rest) and top.size <= 0.8 * max(l.size for l in rest)
+            if not (small or is_label_text(top.text)):
+                continue
+            label = _clean(top.text).rstrip(":").strip()
+            value = _clean(" ".join(l.text for l in rest if not is_label_text(l.text)))
+            if label and label.upper() not in out:
+                out[label.upper()] = value
+    return out
+
+
+def fields_from_cells(cells: dict[str, str]) -> dict[str, str]:
+    """Meta fields from title-block cells; 'A / B' labels split their 'a / b' values part by part."""
+    found: dict[str, str] = {}
+    for label, value in cells.items():
+        if not value:
+            continue
+        parts_l = [x.strip() for x in re.split(r"\s+/\s+", label)]
+        parts_v = [x.strip() for x in re.split(r"\s+/\s+", value)]
+        pairs = list(zip(parts_l, parts_v)) if len(parts_l) > 1 and len(parts_l) == len(parts_v) else [(label, value)]
+        for lab, val in pairs:
+            for key, rx in _CELL_KEYS:
+                if rx.match(lab) and not found.get(key):
+                    v = _mass_value(val) if key == "mass" else val
+                    if v and not is_label_text(v):
+                        found[key] = v
+    return found
 
 
 def _in_title_zone(cx: float, cy: float, page_rect: fitz.Rect) -> bool:
@@ -390,6 +490,14 @@ def _page_plain_text(page: fitz.Page) -> str:
 
 def _extract_from_page(page: fitz.Page) -> dict[str, str]:
     found: dict[str, str] = {}
+    try:
+        cells = title_block_cells(page)
+        cell_fields = fields_from_cells(cells)
+    except Exception:
+        cells, cell_fields = {}, {}
+    for key, val in cell_fields.items():
+        if _valid_value(key, val):
+            found[key] = _clean(val)
     items = _page_title_items(page)
     full_text = _page_plain_text(page)
     for i, (text, rect, _sz) in enumerate(items):
@@ -409,6 +517,14 @@ def _extract_from_page(page: fitz.Page) -> dict[str, str]:
                 if val and _valid_value(key, val):
                     found[key] = val
     found = _line_fallback(full_text, found)
+    # A value read from a labelled title-block cell belongs to that label only
+    # (e.g. the CUSTOMER P/N cell's value is not a customer name)
+    for key in list(found):
+        if key in cell_fields:
+            continue
+        owner = next((lab for lab, v in cells.items() if v and _clean(v) == _clean(found[key])), None)
+        if owner is not None and fields_from_cells({owner: cells[owner]}).get(key) is None:
+            found.pop(key)
     company = _guess_company(items, full_text)
     if company and (not found.get("company_name") or len(company) > len(found.get("company_name") or "")):
         found["company_name"] = company
@@ -447,6 +563,13 @@ def merge_title_meta(meta: dict, extracted: dict[str, str]) -> None:
     for key in _META_KEYS:
         cur = str(meta.get(key) or "").strip()
         if cur and not _valid_value(key, cur):
+            meta[key] = ""
+            cur = ""
+        new = str(extracted.get(key) or "").strip()
+        if cur and new and cur != new and _valid_value(key, new) and (
+            new.upper().startswith(cur.upper() + " ")                         # truncated: 'REAR'
+            or any(cur == str(extracted.get(k) or "").strip() for k in _META_KEYS if k != key)  # other field's value
+        ):
             meta[key] = ""
             cur = ""
         if not cur:
