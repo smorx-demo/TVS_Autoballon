@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 import fitz
 
-from app.services.report_pdf import C_CERT, REPORT_CERT_NO, _cell_text, _measure_cols, measure_status
+from app.services.report_pdf import C_CERT, REPORT_CERT_NO, _cell_text, _measure_cols, measure_status, tolerance_source_label
 
 MASTER_TITLE = "INSPECTION REPORT - Mechanical"
 ROWS_PER_SHEET = 12
@@ -118,6 +118,7 @@ def _spec_text(text: str) -> str:
 class MasterRow:
     cells: list[str]
     statuses: list[str]  # per actual-dimension column
+    auto: bool = False   # tolerance from a general-tolerance standard / rule (shown italic)
 
 
 def build_master_rows(payload: dict, n_actual: int) -> list[MasterRow]:
@@ -156,12 +157,13 @@ def build_master_rows(payload: dict, n_actual: int) -> list[MasterRow]:
             spec,
             str(row.get("reference", "")),
             _tolerance_text(row.get("tol_low", ""), row.get("tol_high", "")),
+            tolerance_source_label(row),
             str(row.get("instrument", "")),
             str(row.get("instr_id", "")),
             *vals,
             str(row.get("remarks", "")),
         ]
-        out.append(MasterRow(cells=cells, statuses=statuses))
+        out.append(MasterRow(cells=cells, statuses=statuses, auto=bool(row.get("tol_auto"))))
     return out
 
 
@@ -178,6 +180,7 @@ class GridCell:
     style: str  # title | label | value | head | data | box
     rowspan: int = 1
     status: str = "empty"
+    italic: bool = False
 
 
 @dataclass
@@ -200,15 +203,15 @@ def build_sheet_grid(
     n_actual: int,
 ) -> SheetGrid:
     mf = {**default_master_fields(), **(payload.get("master_fields") or {})}
-    a0 = 7  # first actual-dimension column
+    a0 = 8  # first actual-dimension column
     rem = a0 + n_actual  # remarks column (last)
-    weights = [40, 80, 108, 55, 50, 105, 77] + [385 / n_actual] * n_actual + [125]
+    weights = [40, 80, 108, 55, 50, 72, 105, 77] + [385 / n_actual] * n_actual + [125]
 
     cells: list[GridCell] = []
     heights: list[float] = []
 
-    def add(r, c0, c1, text, style, rowspan=1, status="empty"):
-        cells.append(GridCell(r, c0, c1, text, style, rowspan, status))
+    def add(r, c0, c1, text, style, rowspan=1, status="empty", italic=False):
+        cells.append(GridCell(r, c0, c1, text, style, rowspan, status, italic))
 
     # Row 0: location + title
     heights.append(24)
@@ -280,7 +283,7 @@ def build_sheet_grid(
     # Table header rows 10-11
     heights += [20, 16]
     for c, label in enumerate(
-        ["SR /\nCH.\nNO.", "Parameters", "Specification", "Zone", "Tol.", "Instrument/\nJig/Fixture", "Inst. ID No"]
+        ["SR /\nCH.\nNO.", "Parameters", "Specification", "Zone", "Tol.", "Tol.\nsource", "Instrument/\nJig/Fixture", "Inst. ID No"]
     ):
         add(10, c, c, label, "head", 2)
     add(10, a0, rem - 1, "Part SL. No.  &  Actual Dimensions", "head")
@@ -296,7 +299,7 @@ def build_sheet_grid(
         for c in range(rem + 1):
             text = mrow.cells[c] if mrow else ""
             status = mrow.statuses[c - a0] if mrow and a0 <= c < rem else "empty"
-            add(r, c, c, text, "data", status=status)
+            add(r, c, c, text, "data", status=status, italic=bool(mrow and mrow.auto and c in (4, 5)))
         r += 1
 
     # Footer
@@ -390,10 +393,10 @@ def render_pdf(grids: list[SheetGrid], *, landscape: bool) -> bytes:
             shape.finish(color=(0, 0, 0), fill=fill, width=0.6)
             text = _cell_text(cell.text) if cell.style in ("data", "value") else cell.text
             if text.strip():
-                text_jobs.append((rect, text, cell.style))
+                text_jobs.append((rect, text, cell.style, cell.italic))
         shape.commit()
 
-        for rect, text, style in text_jobs:
+        for rect, text, style, italic in text_jobs:
             inner = rect + (2.5, 2, -2.5, -1)
             if style == "title":
                 _fit_textbox(page, rect + (2, 4, -2, -1), text, "hebo", 13, 1)
@@ -411,7 +414,7 @@ def render_pdf(grids: list[SheetGrid], *, landscape: bool) -> bytes:
                 pad = max(2, (rect.height - 10) / 2)
                 _fit_textbox(page, rect + (2.5, pad, -2.5, -1), text, "tibo", 8, 1)
             elif style == "data":
-                _fit_textbox(page, rect + (2, 4, -2, -1), text, "helv", 7, 1)
+                _fit_textbox(page, rect + (2, 4, -2, -1), text, "heit" if italic else "helv", 7, 1)
             elif style == "sign":
                 _fit_textbox(page, inner, text, "hebo", 8, 0)
             else:
@@ -496,7 +499,7 @@ def render_xlsx(grids: list[SheetGrid], *, landscape: bool) -> bytes:
                         xc.fill = fill
             text = _cell_text(cell.text) if cell.style in ("data", "value") else cell.text
             tc = ws.cell(r0, c0, text or None)
-            tc.font = fonts[cell.style]
+            tc.font = Font(name="Arial", size=9, italic=True, color="1F4E79") if cell.italic else fonts[cell.style]
             tc.alignment = aligns[cell.style]
 
         ws.page_setup.orientation = "landscape" if landscape else "portrait"

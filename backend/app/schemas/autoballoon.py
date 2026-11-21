@@ -58,6 +58,13 @@ class ReportRow(BaseModel):
     remarks: str = ""
     page: int = 1
     instrument_auto: bool | None = None
+    # General tolerances: where tol_low / tol_high came from (see services/general_tolerance)
+    tol_source: str = ""
+    tol_flags: list[str] = Field(default_factory=list)
+    tol_auto: bool | None = None
+    tol_angle: str = ""
+    tol_category: str = ""
+    tol_size: float | None = None
 
 
 class ReportPayload(BaseModel):

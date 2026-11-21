@@ -80,6 +80,27 @@ def test_summary_lists_balloon_numbers(built):
         assert len(listed) == r[1] and set(listed) <= ex, r
 
 
+def test_summary_lists_balloons_by_zone(built):
+    """Summary 'Balloons by zone': every Extraction balloon exactly once, under its own sheet + zone."""
+    _src, b = built
+    rows = [r for r in openpyxl.load_workbook(io.BytesIO(b["xlsx"]), data_only=True)["Summary"].iter_rows(values_only=True)]
+    i = next(k for k, r in enumerate(rows) if r[0] == "Balloons by zone")
+    assert rows[i + 1][:3] == ("Sheet / zone", "Count", "Balloon Nos.")
+    listed: dict[int, str] = {}
+    for r in rows[i + 2:]:
+        if r[0] is None:
+            break
+        nos = [int(x) for x in str(r[2]).split(",")]
+        assert len(nos) == r[1]
+        for n in nos:
+            assert n not in listed
+            listed[n] = r[0]
+    ex = _sheet_rows(b["xlsx"], "Extraction")
+    assert set(listed) == {r["Balloon No."] for r in ex}
+    for r in ex:
+        assert listed[r["Balloon No."]] == f"Sheet {r['Sheet']} · Zone {r['Zone']}"
+
+
 def test_title_block_fields_in_summary_and_report(built):
     src, b = built
     from app.services.title_block_extract import title_block_cells
@@ -102,15 +123,48 @@ def test_title_block_fields_in_summary_and_report(built):
         assert v in report_text, v
 
 
+_GT_FIELDS = ("Upper tolerance", "Lower tolerance", "Max limit", "Min limit")
+
+
+def _strip_general_tolerance(r: dict) -> dict:
+    """Snapshot view of a row: general-tolerance fields of open dimensions removed (they are new)."""
+    notes = str(r.get("Notes") or "")
+    if "Tolerance source:" not in notes:
+        return r
+    r = {k: v for k, v in r.items() if k not in _GT_FIELDS}
+    base = notes.split("Tolerance source:")[0].rstrip("; ").strip()
+    r["Notes"] = base or None
+    return r
+
+
 def test_extraction_values_unchanged(built):
+    """Everything but the new open-dimension tolerance fields is identical to the snapshot."""
     src, b = built
     snap = json.loads((SNAPSHOTS / f"{src.stem}_extraction.json").read_text(encoding="utf-8"))
+
+    def key(r: dict, drop_gt: bool) -> tuple:
+        r = _strip_general_tolerance(r)
+        return tuple((k, str(v)) for k, v in sorted(r.items())
+                     if k != "Balloon No." and not (drop_gt and k in _GT_FIELDS))
+
+    now = _sheet_rows(b["xlsx"], "Extraction")
+    gt_rows = {r["Text as shown on drawing"] for r in now if "Tolerance source:" in str(r.get("Notes") or "")}
+    snap_cmp = [r if r["Text as shown on drawing"] not in gt_rows else {k: v for k, v in r.items() if k not in _GT_FIELDS}
+                for r in snap]
+    assert Counter(key(r, False) for r in now) == Counter(key(r, False) for r in snap_cmp)
+
+
+def test_extraction_unchanged_with_general_tolerances_off(built):
+    src, b = built
+    from app.services.tvs_extraction_report import build_tvs_extraction_xlsx
+
+    snap = json.loads((SNAPSHOTS / f"{src.stem}_extraction.json").read_text(encoding="utf-8"))
+    off = _sheet_rows(build_tvs_extraction_xlsx(dict(b["meta"]), src, general_tolerances=False), "Extraction")
 
     def key(r: dict) -> tuple:
         return tuple((k, str(v)) for k, v in sorted(r.items()) if k != "Balloon No.")
 
-    now = _sheet_rows(b["xlsx"], "Extraction")
-    assert Counter(key(r) for r in now) == Counter(key(r) for r in snap)
+    assert Counter(key(r) for r in off) == Counter(key(r) for r in snap)
 
 
 def test_numbering_follows_sheet_then_zone(built):

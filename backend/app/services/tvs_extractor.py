@@ -1068,9 +1068,21 @@ def _f(s: str | None) -> float | None:
     return float(str(s).replace(",", ".").replace("+", "").replace("±", ""))
 
 
+HOLE_SUFFIX = re.compile(r"^(?P<core>.*?\d.*?)\s+(?P<hole>(?:DRILL(?:ED)?|BORED?|REAM(?:ED)?|C'?BORE)(?:\s+THRU)?|THRU)$", re.I)
+
+
 def parse_dimension(nom: str, devs: list[str]) -> dict | None:
     """Interpret a nominal + stacked deviations → type, symbol, nominal, upper, lower, fit."""
     t = _norm(nom)
+    hs = HOLE_SUFFIX.match(t)
+    if hs and not devs:
+        # Hole callout 'Ø8 DRILL', '4× Ø9 THRU', 'Ø20 BORE': a diameter with its making process
+        info = parse_dimension(hs.group("core"), [])
+        if info is not None and info["type"] in ("Diameter", "Fit (hole)"):
+            hole = hs.group("hole").upper()
+            info["detail"] = "; ".join(x for x in (info["detail"], hole) if x)
+            return info
+        return None
     ref = basic = False
     if re.fullmatch(r"\(.*\)", t):
         ref, t = True, t[1:-1].strip()
@@ -1911,6 +1923,14 @@ def _extract(doc: fitz.Document) -> Extraction:
         t = f.meta.get("applies_to")
         if t is not None and t.view:
             f.view = t.view
+
+    # General-tolerance class of open dimensions (Feature.meta['gt_class'] only; never changes values)
+    try:
+        from app.services.general_tolerance.geometry import annotate_features
+
+        annotate_features(pages, all_features, labels_by_sheet)
+    except Exception:
+        _LOG.exception("TVS extractor: general-tolerance classification failed")
 
     _assign_critical(all_features, cc_flags, _cc_table_refs(all_tables), pages)
 

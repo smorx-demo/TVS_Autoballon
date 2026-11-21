@@ -12,7 +12,15 @@ import {
   type ReportRow,
   type ScanSuggestion,
 } from "../api";
-import type { DrawingVersionInfo } from "../api";
+import type { DrawingVersionInfo, GtJobState, GtTeach } from "../api";
+import {
+  GtBadge,
+  GtBanner,
+  GtTeachDialog,
+  gtCellClass,
+  isOpenRow,
+  type TeachRequest,
+} from "../components/GeneralTolerance";
 import {
   featureTypeFor,
   getActiveRules,
@@ -23,6 +31,7 @@ import {
   type InstrumentSuggestion,
 } from "../constants/instrumentSuggest";
 import InstrumentSettingsPanel from "../components/InstrumentSettingsPanel";
+import { GeneralToleranceSettingsModal } from "../components/GeneralToleranceAdmin";
 import { currentHighlightMap, highlightedBalloonNumbers } from "../constants/versionHighlight";
 import "../components/version-highlight.css";
 import { getJobSession, setJobSession, useAuth } from "../auth";
@@ -2262,6 +2271,100 @@ function ReportPanel({
     setRows((rs) => rs.map((x) => (x.balloon === balloon ? { ...x, ...patch } : x)));
   };
 
+  // ---- general tolerances (open dimensions): banner, badges, "teach once" prompt
+  const [gt, setGt] = useState<GtJobState | null>(null);
+  const [teachReq, setTeachReq] = useState<TeachRequest | null>(null);
+  const [showGtSettings, setShowGtSettings] = useState(false);
+  const tolBefore = useRef<Record<number, { low: string; high: string }>>({});
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+
+  useEffect(() => {
+    let live = true;
+    api
+      .gtJob(jobId)
+      .then((s) => live && setGt(s))
+      .catch(() => live && setGt(null));
+    return () => {
+      live = false;
+    };
+  }, [jobId, job]);
+
+  const persistRows = async () => {
+    if (!rowsDirty && !reportDirty) return;
+    if (rows.length > 500) await api.saveReportChunked(jobId, payload(), (m) => setMsg(m));
+    else await api.saveReport(jobId, payload(), { localOnly: rows.length > 200 });
+    setRowsDirty(false);
+    setReportDirty(false);
+  };
+
+  const gtChanged = async (s: GtJobState) => {
+    setGt(s);
+    await persistRows();
+    await onSaved();
+    setMsg("General tolerance updated for this drawing; open dimensions were re-calculated.");
+  };
+
+  const rememberTol = (r: ReportRow) => {
+    if (!tolBefore.current[r.balloon]) tolBefore.current[r.balloon] = { low: r.tol_low, high: r.tol_high };
+  };
+
+  const editTol = (balloon: number, patch: Partial<ReportRow>) =>
+    updateRowByBalloon(balloon, { ...patch, tol_source: "Manual", tol_auto: false, tol_flags: [] });
+
+  /** Offer "apply to similar" once focus leaves this row's Tol − / Tol + pair (read latest rows via ref). */
+  const maybeTeach = (balloon: number, next: EventTarget | null) => {
+    if (next instanceof HTMLElement && next.dataset.gtBalloon === String(balloon)) return; // moving to the other limit
+    window.setTimeout(() => {
+      const before = tolBefore.current[balloon];
+      delete tolBefore.current[balloon];
+      const r = rowsRef.current.find((x) => x.balloon === balloon);
+      if (!r || !before || !isOpenRow(r)) return;
+      if (before.low === r.tol_low && before.high === r.tol_high) return;
+      if (!r.tol_low.trim() || !r.tol_high.trim()) return; // wait until both limits are entered
+      setTeachReq({ row: r, low: r.tol_low, high: r.tol_high });
+    }, 0);
+  };
+
+  const applyTeach = async (body: GtTeach) => {
+    setBusy(true);
+    try {
+      await persistRows();
+      const res = await api.gtTeach(jobId, body);
+      setGt(res);
+      setTeachReq(null);
+      await onSaved();
+      const n = (res.changed || []).length;
+      setMsg(
+        body.scope === "dimension"
+          ? `Tolerance saved for balloon ${body.balloon}.`
+          : `Rule saved (${res.rule?.name || body.scope}) — ${n} open dimension(s) on this drawing updated.`,
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resetTol = async (balloon: number) => {
+    if (!window.confirm(`Go back to the automatic general tolerance for balloon ${balloon}?`)) return;
+    setBusy(true);
+    try {
+      const next = rows.map((x) =>
+        x.balloon === balloon ? { ...x, tol_source: "Reset", tol_low: "", tol_high: "", tol_auto: false } : x,
+      );
+      setRows(next);
+      await api.saveReport(jobId, { ...payload(), rows: next }, { localOnly: next.length > 200 });
+      setRowsDirty(false);
+      setReportDirty(false);
+      await onSaved();
+      setMsg(`Balloon ${balloon}: automatic general tolerance restored.`);
+    } catch (e: any) {
+      onError(e.message || "Could not reset the tolerance");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   // Instrument auto-suggest (rules: Instrument Settings; defaults in constants/instrument_rules.json)
   const [rulesRev, setRulesRev] = useState(0);
   const [rulesCanEdit, setRulesCanEdit] = useState(false);
@@ -2603,6 +2706,13 @@ function ReportPanel({
             >
               Instrument Settings
             </button>
+            <button
+              className="btn btn-ghost btn-sm instr-settings-open"
+              onClick={() => setShowGtSettings(true)}
+              title="General tolerances for open dimensions: standards, defaults and taught rules"
+            >
+              General Tolerance Settings
+            </button>
             <input
               ref={scanFileRef}
               type="file"
@@ -2652,6 +2762,25 @@ function ReportPanel({
           />
         )}
         {instrToast && <div className="instr-settings-toast">{instrToast}</div>}
+        {showGtSettings && (
+          <GeneralToleranceSettingsModal
+            jobId={jobId}
+            onClose={() => {
+              setShowGtSettings(false);
+              // rules / defaults may have changed: re-calculate this drawing's open dimensions
+              void (async () => {
+                try {
+                  await persistRows();
+                  const s = await api.gtSetDrawing(jobId, {});
+                  setGt(s);
+                  await onSaved();
+                } catch {
+                  /* keep the report as it is */
+                }
+              })();
+            }}
+          />
+        )}
 
         <div
           className="report-scan-bar mb"
@@ -2820,6 +2949,11 @@ function ReportPanel({
           </div>
         </div>
 
+        <GtBanner jobId={jobId} state={gt} busy={busy} onChanged={gtChanged} onError={onError} />
+        {teachReq && (
+          <GtTeachDialog req={teachReq} state={gt} onCancel={() => setTeachReq(null)} onApply={applyTeach} />
+        )}
+
         <div className="report-wrap">
           <table className="table report-table">
             <thead>
@@ -2874,10 +3008,31 @@ function ReportPanel({
                   </td>
                   <td>{r.nominal}</td>
                   <td>
-                    <input value={r.tol_low} onChange={(e) => updateRowByBalloon(r.balloon, { tol_low: e.target.value })} />
+                    <div className="gt-tol-cell">
+                      <input
+                        className={gtCellClass(r)}
+                        data-gt-balloon={r.balloon}
+                        value={r.tol_low}
+                        title={r.tol_source || undefined}
+                        onFocus={() => rememberTol(r)}
+                        onBlur={(e) => maybeTeach(r.balloon, e.relatedTarget)}
+                        onChange={(e) => editTol(r.balloon, { tol_low: e.target.value })}
+                      />
+                    </div>
                   </td>
                   <td>
-                    <input value={r.tol_high} onChange={(e) => updateRowByBalloon(r.balloon, { tol_high: e.target.value })} />
+                    <div className="gt-tol-cell">
+                      <input
+                        className={gtCellClass(r)}
+                        data-gt-balloon={r.balloon}
+                        value={r.tol_high}
+                        title={r.tol_source || undefined}
+                        onFocus={() => rememberTol(r)}
+                        onBlur={(e) => maybeTeach(r.balloon, e.relatedTarget)}
+                        onChange={(e) => editTol(r.balloon, { tol_high: e.target.value })}
+                      />
+                      <GtBadge row={r} onReset={() => void resetTol(r.balloon)} />
+                    </div>
                   </td>
                   <td>
                     <select

@@ -417,6 +417,41 @@ export const api = {
     req<{ ok: boolean; version: number; count: number; max_balloon: number }>(
       `/api/jobs/${jobId}/drawing-map/save`,
       { method: "POST" }),
+  // ---- general tolerances (open dimensions)
+  gtJob: (jobId: string) => req<GtJobState>(`/api/general-tolerances/jobs/${jobId}`),
+  gtSetDrawing: (jobId: string, body: { standard?: { id: string; cls?: string | null } | null; process?: string | null;
+    sheet_thickness?: number | null; enabled?: boolean; clear_standard?: boolean; clear_process?: boolean }) =>
+    req<GtJobState>(`/api/general-tolerances/jobs/${jobId}/drawing`, { method: "PUT", body: JSON.stringify(body) }),
+  gtFeatureProcess: (jobId: string, body: { process: string | null; balloons?: number[]; area_page?: number;
+    area_x?: number; area_y?: number; area_w?: number; area_h?: number }) =>
+    req<GtJobState & { updated_balloons: number[] }>(`/api/general-tolerances/jobs/${jobId}/feature-process`,
+      { method: "POST", body: JSON.stringify(body) }),
+  gtTeach: (jobId: string, body: GtTeach) =>
+    req<GtJobState>(`/api/general-tolerances/jobs/${jobId}/teach`, { method: "POST", body: JSON.stringify(body) }),
+  gtPreview: (jobId: string, body: { rule?: Partial<GtRule>; settings?: GtOrgSettings }) =>
+    req<{ changes: NonNullable<GtJobState["changed"]> }>(`/api/general-tolerances/jobs/${jobId}/preview`,
+      { method: "POST", body: JSON.stringify(body) }),
+  gtStandards: () => req<GtStandards>("/api/general-tolerances/standards"),
+  gtSettings: () => req<{ settings: GtOrgSettings; can_edit: boolean }>("/api/general-tolerances/settings"),
+  gtSaveSettings: (s: GtOrgSettings) =>
+    req<{ settings: GtOrgSettings; can_edit: boolean }>("/api/general-tolerances/settings", { method: "PUT", body: JSON.stringify(s) }),
+  gtRules: () => req<{ rules: GtRule[]; can_edit: boolean }>("/api/general-tolerances/rules"),
+  gtCreateRule: (r: Partial<GtRule>) =>
+    req<GtRule>("/api/general-tolerances/rules", { method: "POST", body: JSON.stringify(r) }),
+  gtUpdateRule: (id: string, r: Partial<GtRule>) =>
+    req<GtRule>(`/api/general-tolerances/rules/${id}`, { method: "PATCH", body: JSON.stringify(r) }),
+  gtDeleteRule: (id: string) => req<{ ok: boolean }>(`/api/general-tolerances/rules/${id}`, { method: "DELETE" }),
+  gtRuleHistory: (id: string) =>
+    req<{ history: { action: string; changed_by: string; changed_at: string }[] }>(`/api/general-tolerances/rules/${id}/history`),
+  gtExportRules: async (fmt: "csv" | "xlsx") => {
+    const blob = await fetchBlob(`/api/general-tolerances/rules/export?fmt=${fmt}`);
+    return saveBlob(blob, `general_tolerance_rules.${fmt}`);
+  },
+  gtImportRules: (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return req<{ created: number; errors: string[] }>("/api/general-tolerances/rules/import", { method: "POST", body: fd });
+  },
   getInstrumentRules: () => req<InstrumentRulesResponse>("/api/settings/instrument-rules"),
   saveInstrumentRules: (rules: EditableInstrumentRules) =>
     req<InstrumentRulesResponse>("/api/settings/instrument-rules", {
@@ -772,6 +807,124 @@ export type ReportRow = {
   measured: string[];
   remarks: string;
   instrument_auto?: boolean | null;
+  /** Where tol_low / tol_high came from: "Drawing" | "Manual" | "General tol – …" | "Rule: …" | "Org default – …" | "None – …" */
+  tol_source?: string;
+  tol_flags?: string[];
+  tol_auto?: boolean | null;
+  tol_angle?: string;
+  tol_category?: string;
+  /** Size used for the general-tolerance lookup (e.g. 6 for "2× R6"). */
+  tol_size?: number | null;
+};
+
+export type GtSuggest = {
+  category: string;
+  category_label: string;
+  size: number;
+  size_min: number | null;
+  size_max: number | null;
+  band: string;
+};
+
+export type GtRow = {
+  balloon: number;
+  page: number;
+  nominal: string;
+  tol_low: string;
+  tol_high: string;
+  tol_source: string;
+  tol_flags: string[];
+  tol_auto: boolean | null;
+  tol_angle: string;
+  tol_category: string;
+  suggest: GtSuggest | null;
+};
+
+export type GtBanner = {
+  text: string;
+  source: string;
+  standard: string;
+  standard_id: string;
+  iso_class: string | null;
+  process: string | null;
+  needs_process: boolean;
+  process_hint: string;
+  flags: string[];
+  conflict: string;
+  sheet_thickness: number | null;
+  geometric_class: number | null;
+  drawing_key: string;
+  family_key: string;
+  text_source: string;
+  detected_standards: string[];
+  enabled: boolean;
+};
+
+export type GtJobState = {
+  banner: GtBanner;
+  rows: GtRow[];
+  drawing_settings: Record<string, unknown>;
+  counts: { open?: number; standard?: number; rule?: number; manual?: number; unresolved?: number[] };
+  scopes: { drawing: string; family: string | null; customer: string };
+  family_enabled: boolean;
+  processes: Record<string, string>;
+  changed?: { balloon: number; page: number; nominal: string;
+    before: { tol_low: string; tol_high: string; source: string };
+    after: { tol_low: string; tol_high: string; source: string } }[];
+  rule?: GtRule | null;
+};
+
+export type GtRule = {
+  id: string;
+  org_id: string;
+  scope: "drawing" | "family" | "customer";
+  scope_key: string;
+  process: string | null;
+  category: string;
+  hole_type: string | null;
+  size_min: number | null;
+  size_max: number | null;
+  unit: "mm" | "deg" | "%";
+  upper: number;
+  lower: number;
+  name: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  active: boolean;
+};
+
+export type GtOrgSettings = {
+  enabled: boolean;
+  default_standard: "" | "ISO2768" | "TSDS0407";
+  default_iso_class: string;
+  default_process: string;
+  preferred_standard: "" | "ISO2768" | "TSDS0407";
+  range_convention: "upper_inclusive" | "lower_inclusive";
+  family_pattern: string;
+};
+
+export type GtStandards = {
+  standards: { id: string; standard: string; title: string; transcription?: { status?: string };
+    range_convention?: Record<string, unknown>; notes: string[];
+    tables: Record<string, { title: string; unit: string; bands: [string, number | null, number | null][];
+      columns: Record<string, { label: string; values?: (string | null)[]; all_sizes?: string; all_sizes_text?: string }> }> }[];
+  processes: Record<string, string>;
+  categories: { id: string; label: string }[];
+};
+
+export type GtTeach = {
+  balloon: number;
+  page: number;
+  scope: "dimension" | "drawing" | "family" | "customer";
+  upper: number;
+  lower: number;
+  unit?: "mm" | "deg" | "%";
+  category?: string;
+  size_min?: number | null;
+  size_max?: number | null;
+  process?: string | null;
+  name?: string;
 };
 
 export type MeasureCol = {

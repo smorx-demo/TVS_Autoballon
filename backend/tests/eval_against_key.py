@@ -412,15 +412,18 @@ def format_report(r: dict, verbose: bool = True) -> str:
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
-def run_pipeline(pdf: Path) -> bytes:
+def run_pipeline(pdf: Path, *, general_tolerances: bool = False) -> bytes:
+    """TVS extraction report for `pdf`. The existing answer keys leave open-dimension tolerances
+    blank, so they are scored with general tolerances OFF (the default here)."""
     from app.services.tvs_extraction_report import build_tvs_extraction_from_pdf
 
-    return build_tvs_extraction_from_pdf(pdf)
+    return build_tvs_extraction_from_pdf(pdf, general_tolerances=general_tolerances)
 
 
 if __name__ == "__main__":
-    pdf = Path(sys.argv[1]) if len(sys.argv) > 1 else FIXTURES / "SMX-DEMO-HF-001.pdf"
-    key = Path(sys.argv[2]) if len(sys.argv) > 2 else FIXTURES / "SMX-DEMO-HF-001_expected_extraction.xlsx"
-    report = evaluate(run_pipeline(pdf), key)
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    pdf = Path(args[0]) if args else FIXTURES / "SMX-DEMO-HF-001.pdf"
+    key = Path(args[1]) if len(args) > 1 else FIXTURES / "SMX-DEMO-HF-001_expected_extraction.xlsx"
+    report = evaluate(run_pipeline(pdf, general_tolerances="--general-tolerances" in sys.argv), key)
     print(format_report(report))
     sys.exit(0 if report["passed"] else 1)
