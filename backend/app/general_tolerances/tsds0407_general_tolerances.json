@@ -1,0 +1,181 @@
+{
+  "standard": "TSDS0407",
+  "title": "TVS System Design Standard - Unspecified Tolerance Chart",
+  "sheet": "Sheet 1 of 1",
+  "source_document": "TSDS0407_2D_A4.pdf",
+  "transcription": {
+    "status": "UNVERIFIED - transcribed by Claude Code from TSDS0407_2D_A4.pdf on 2026-11-20 (no text layer; read from the rendered chart). TVS must check every cell against the controlled copy of the chart.",
+    "cell_format": "Each cell is the chart text exactly as printed: '±0.1' = +0.1/-0.1; '-0.1' = 0/-0.1 (unilateral minus); '+0.2' = +0.2/0 (unilateral plus); '+0.4/-0.2' = asymmetric; '±1°30'' = degrees and minutes; '±0.8%' = percent of nominal; null = '—' or 'NA' on the chart (not specified).",
+    "band_format": "[label, over, up_to_and_including]; null 'over' = from 0 (or the first row's lower value inclusive); null 'up_to' = no upper limit."
+  },
+  "range_convention": {
+    "default": "upper_inclusive",
+    "options": {
+      "upper_inclusive": "'X-Y' means over X up to and including Y (4 is in '1-4', not in '4-16').",
+      "lower_inclusive": "'X-Y' means from X up to but excluding Y (4 is in '4-16')."
+    },
+    "explicit_symbols": "'≤X' always includes X; '>X' always excludes X. The first band's lower value is inclusive (casting starts at 1 mm, lost wax at 0.3 mm).",
+    "confirmed_by_tvs": false
+  },
+  "notes": [
+    "1. Other tolerance standards to be referred: IS:2102-PART-I & PART-II - general tolerance; IS:3469 - tolerance for closed die forging; IS:4897, 5519, 8350 & 8349 - steel castings. Also refer ADCI E1-65 to E12-65 for PDC.",
+    "Positional tables apply only to unspecified position (location) tolerances, never to sizes.",
+    "Geometric machining classes 1/2/3 apply only when the drawing states the class.",
+    "Angular 'basic size' is assumed to be the length of the shorter leg (to be confirmed by TVS)."
+  ],
+  "tables": {
+    "geometric_machining": {
+      "title": "GEOMETRIC TOL. FOR MACHINING",
+      "kind": "geometric",
+      "unit": "mm",
+      "bands": [["≤4", null, 4], ["4-16", 4, 16], ["16-63", 16, 63], ["63-250", 63, 250], ["250-1000", 250, 1000]],
+      "columns": {
+        "straightness_flatness_parallelism_class3": {"label": "STRAIGHT,FLAT,PARALLEL class 3", "values": ["0.08", "0.15", "0.30", "0.60", "1.20"]},
+        "straightness_flatness_parallelism_class2": {"label": "STRAIGHT,FLAT,PARALLEL class 2", "values": ["0.04", "0.08", "0.15", "0.30", "0.60"]},
+        "straightness_flatness_parallelism_class1": {"label": "STRAIGHT,FLAT,PARALLEL class 1", "values": ["0.02", "0.04", "0.08", "0.15", "0.30"]},
+        "runout_circular_class3": {"label": "RUNOUT,CIRCULAR class 3", "all_sizes": "0.3"},
+        "runout_circular_class2": {"label": "RUNOUT,CIRCULAR class 2", "all_sizes": "0.2"},
+        "runout_circular_class1": {"label": "RUNOUT,CIRCULAR class 1", "all_sizes": "0.1"},
+        "symmetry_class3": {"label": "SYMMETRY class 3", "values": ["0.6", "0.6", "0.8", "1.0", "1.6"]},
+        "symmetry_class2": {"label": "SYMMETRY class 2", "values": ["0.4", "0.4", "0.5", "0.6", "0.8"]},
+        "symmetry_class1": {"label": "SYMMETRY class 1", "values": ["0.2", "0.2", "0.3", "0.4", "0.5"]},
+        "perpendicularity_class3": {"label": "PERPENDICULAR class 3", "values": ["0.4", "0.6", "0.8", "1.2", "1.6"]},
+        "perpendicularity_class2": {"label": "PERPENDICULAR class 2", "values": ["0.2", "0.3", "0.4", "0.6", "0.8"]},
+        "perpendicularity_class1": {"label": "PERPENDICULAR class 1", "values": ["0.10", "0.15", "0.2", "0.30", "0.40"]}
+      }
+    },
+    "angular_machining": {
+      "title": "ANGULAR TOL. FOR MACHINING",
+      "kind": "angular",
+      "unit": "deg",
+      "basic_size": "length of the shorter leg (assumed; TVS to confirm)",
+      "bands": [["≤4", null, 4], ["4-16", 4, 16], ["16-32", 16, 32], ["32-63", 32, 63], ["63-250", 63, 250], ["250-1000", 250, 1000]],
+      "columns": {
+        "degrees": {"label": "DEGREES", "values": ["±1°30'", "±1°0'", "±0°45'", "±0°30'", "±0°20'", "±0°15'"]}
+      }
+    },
+    "machining": {
+      "title": "TOL. FOR MACHINING",
+      "kind": "size",
+      "unit": "mm",
+      "bands": [["≤1", null, 1], ["1-4", 1, 4], ["4-16", 4, 16], ["16-63", 16, 63], ["63-250", 63, 250], ["250-1000", 250, 1000]],
+      "columns": {
+        "outside_dia": {"label": "OUT SIDE Ø", "values": ["-0.1", "-0.1", "-0.15", "-0.2", "-0.4", "-0.6"]},
+        "inside_dia_boring": {"label": "INSIDE Ø BORING", "values": ["+0.1", "+0.1", "+0.15", "+0.2", "+0.4", "+0.6"]},
+        "inside_dia_drilling": {"label": "INSIDE Ø DRILLING", "values": ["+0.2", "+0.2", "+0.4", "+0.6", null, null]},
+        "length": {"label": "LENGTH", "values": ["±0.1", "±0.1", "±0.15", "±0.2", "±0.4", "±0.6"]},
+        "corner_chamfer": {"label": "CORNER CHAMF.", "values": ["±0.25", "±0.5", "±0.5", null, null, null]},
+        "corner_round": {"label": "CORNER ROUND", "values": ["±0.25", "±0.25", "±0.5", null, null, null]}
+      }
+    },
+    "casting": {
+      "title": "TOL. FOR CASTING",
+      "kind": "size",
+      "unit": "mm",
+      "bands": [["1-4", 1, 4], ["4-16", 4, 16], ["16-63", 16, 63], ["63-250", 63, 250], ["250-1000", 250, 1000]],
+      "columns": {
+        "hpdc_length": {"label": "HIGH-PDC LENGTH", "values": ["±0.1", "±0.2", "±0.3", "±0.5", "±0.8"]},
+        "hpdc_id": {"label": "HIGH-PDC I.D", "values": ["+0.2", "+0.3", "+0.4", "+0.8", "+1.2"]},
+        "hpdc_od": {"label": "HIGH-PDC O.D", "values": ["-0.2", "-0.3", "-0.4", "-0.8", "-1.2"]},
+        "shell_casting": {"label": "SHELL CASTING", "values": ["±0.15", "±0.3", "±0.4", "±0.7", "±1.0"]},
+        "sand_casting": {"label": "SAND CASTING", "values": ["±0.3", "±0.5", "±0.7", "±1.2", "±2.0"]}
+      }
+    },
+    "pressing": {
+      "title": "TOL. FOR PRESSING",
+      "kind": "size",
+      "unit": "mm",
+      "bands": [["≤4", null, 4], ["4-16", 4, 16], ["16-63", 16, 63], ["63-250", 63, 250], ["250-1000", 250, 1000]],
+      "columns": {
+        "length": {"label": "LENGTH", "values": ["±0.3", "±0.5", "±0.7", "±1.2", "±2.0"]},
+        "inside_dia_t_le_2_3": {"label": "INSIDE Ø t≤2.3", "values": ["+0.2", "+0.4", "+0.6", "+1.0", "+1.6"]},
+        "inside_dia_t_gt_2_3": {"label": "INSIDE Ø t>2.3", "values": ["+0.4", "+0.8", "+1.2", "+2.0", "+3.2"]}
+      }
+    },
+    "forging": {
+      "title": "TOL. FOR FORGING",
+      "kind": "size",
+      "unit": "mm",
+      "bands": [["≤4", null, 4], ["4-16", 4, 16], ["16-63", 16, 63], ["63-250", 63, 250]],
+      "columns": {
+        "thickness": {"label": "THK.", "values": ["+0.4/-0.2", "+0.6/-0.3", "+1.0/-0.5", "+1.5/-0.5"]},
+        "length": {"label": "LENGTH", "values": ["±0.3", "±0.4", "±0.5", "±1.0"]},
+        "deviation_of_centering": {"label": "DEVIATION OF CENTERING", "all_sizes": "0.5", "applies_to": "centering only"}
+      }
+    },
+    "positional_casting": {
+      "title": "POSITIONAL TOL. FOR CASTING",
+      "kind": "positional",
+      "unit": "mm",
+      "bands": [["1-4", 1, 4], ["4-16", 4, 16], ["16-63", 16, 63], ["63-250", 63, 250], ["250-1000", 250, 1000]],
+      "columns": {
+        "die": {"label": "CASTING DIE", "values": ["±0.15", "±0.3", "±0.4", "±0.6", "±1.0"]},
+        "shell": {"label": "CASTING SHELL", "values": ["±0.4", "±0.5", "±0.6", "±1.0", "±1.5"]},
+        "sand": {"label": "CASTING SAND", "values": ["±0.8", "±1.0", "±1.5", "±1.8", "±2.5"]}
+      }
+    },
+    "welding": {
+      "title": "TOL. FOR WELDING",
+      "kind": "size",
+      "unit": "mm",
+      "bands": [["≤4", null, 4], ["4-16", 4, 16], ["16-63", 16, 63], ["63-250", 63, 250], [">250", 250, null]],
+      "columns": {
+        "length": {"label": "LENGTH", "values": ["±0.4", "±0.8", "±1.2", "±2.0", "±3.2"]}
+      }
+    },
+    "positional_pressing": {
+      "title": "POSITIONAL TOL. FOR PRESSING",
+      "kind": "positional",
+      "unit": "mm",
+      "bands": [["≤16", null, 16], ["16-63", 16, 63], ["63-250", 63, 250], [">250", 250, null]],
+      "columns": {
+        "tol": {"label": "TOL.", "values": ["±0.1", "±0.15", "±0.2", "±0.3"]}
+      }
+    },
+    "plastic": {
+      "title": "TOL. FOR PLASTIC",
+      "kind": "size",
+      "unit": "mm",
+      "bands": [["1-4", 1, 4], ["4-16", 4, 16], ["16-63", 16, 63], ["63-250", 63, 250], ["250-1000", 250, 1000]],
+      "columns": {
+        "length": {"label": "LENGTH", "values": ["±0.1", "±0.2", "±0.4", "±0.5", "±0.8"]},
+        "thickness": {"label": "THK", "values": ["±0.2", "±0.3", null, null, null]},
+        "id": {"label": "I.D", "values": ["+0.2", "+0.3", "+0.4", "+0.8", "+1.2"]},
+        "od": {"label": "O.D", "values": ["-0.2", "-0.3", "-0.4", "-0.8", "-1.2"]}
+      }
+    },
+    "rubber": {
+      "title": "TOL. FOR RUBBER",
+      "kind": "size",
+      "unit": "mm",
+      "bands": [["≤3", null, 3], ["3-6", 3, 6], ["6-10", 6, 10], ["10-18", 10, 18], ["18-30", 18, 30], ["30-50", 30, 50],
+                ["50-80", 50, 80], ["80-120", 80, 120], ["120-180", 120, 180], ["180-250", 180, 250], ["250-315", 250, 315],
+                ["315-400", 315, 400], ["400-500", 400, 500], [">500", 500, null]],
+      "columns": {
+        "moulding": {"label": "MOULDING", "values": ["±0.3", "±0.4", "±0.5", "±0.6", "±0.8", "±1.0", "±1.2", "±1.4", "±1.6", "±2.0", "±2.5", "±3.0", "±3.5", "±0.8%"]},
+        "extrusion_and_others": {"label": "EXTRUSION & OTHERS", "values": ["±0.4", "±0.5", "±0.6", "±0.8", "±1.0", "±1.5", "±2.0", "±2.5", "±3.0", "±4.0", "±5.0", "±6.0", "±7.0", "±1.5%"]}
+      }
+    },
+    "lost_wax": {
+      "title": "TOL. FOR LOST WAX PROCESS",
+      "kind": "size",
+      "unit": "mm",
+      "bands": [["0.3-1", 0.3, 1], ["1-4", 1, 4], ["4-16", 4, 16], ["16-30", 16, 30], ["30-50", 30, 50], ["50-75", 50, 75],
+                ["75-100", 75, 100], ["100-150", 100, 150], ["150-250", 150, 250], ["250-350", 250, 350]],
+      "columns": {
+        "dia_lg": {"label": "Ø LG", "values": ["±0.10", "±0.15", "±0.20", "±0.25", "±0.30", "±0.40", "±0.50", "±0.60", "±1.00", "±1.20"]},
+        "rounding": {"label": "ROUNDING", "values": ["±0.25", "±0.30", "±0.30", "±0.40", "±0.40", "±0.50", "±0.70", "±1.20", "±2.00", "±3.00"]}
+      }
+    },
+    "lost_wax_angular_roughness": {
+      "title": "ANGULAR & ROUGHNESS TOL. FOR LOST WAX PROCESS",
+      "kind": "angular",
+      "unit": "deg",
+      "bands": [],
+      "columns": {
+        "angles": {"label": "ANGLES", "all_sizes": "±1°"},
+        "surface_roughness": {"label": "SURFACE ROUGHNESS", "all_sizes_text": "Ra ≤ 6.4", "applies_to": "surface finish (not applied to size dimensions)"}
+      }
+    }
+  }
+}

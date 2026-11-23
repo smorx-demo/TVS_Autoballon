@@ -157,6 +157,40 @@ def ensure_commercial_schema() -> None:
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS general_tolerance_rules (
+            id VARCHAR(64) PRIMARY KEY,
+            org_id VARCHAR(64) NOT NULL DEFAULT 'default',
+            scope VARCHAR(16) NOT NULL DEFAULT 'drawing',
+            scope_key VARCHAR(255) NOT NULL DEFAULT '',
+            process VARCHAR(32),
+            category VARCHAR(32) NOT NULL,
+            hole_type VARCHAR(16),
+            size_min DOUBLE PRECISION,
+            size_max DOUBLE PRECISION,
+            unit VARCHAR(8) NOT NULL DEFAULT 'mm',
+            upper DOUBLE PRECISION NOT NULL,
+            lower DOUBLE PRECISION NOT NULL,
+            name VARCHAR(255) DEFAULT '',
+            created_by VARCHAR(120) DEFAULT '',
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            active BOOLEAN DEFAULT TRUE
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_gt_rules_org_scope ON general_tolerance_rules (org_id, scope, scope_key)",
+        """
+        CREATE TABLE IF NOT EXISTS general_tolerance_rule_audit (
+            id VARCHAR(64) PRIMARY KEY,
+            rule_id VARCHAR(64) NOT NULL,
+            action VARCHAR(16) NOT NULL,
+            changed_by VARCHAR(120) DEFAULT '',
+            changed_at TIMESTAMPTZ DEFAULT NOW(),
+            before_json TEXT DEFAULT 'null',
+            after_json TEXT DEFAULT 'null'
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_gt_rule_audit_rule ON general_tolerance_rule_audit (rule_id)",
+        """
         CREATE TABLE IF NOT EXISTS jobs (
             job_id VARCHAR(64) PRIMARY KEY,
             customer_id VARCHAR(64) REFERENCES customers(customer_id),

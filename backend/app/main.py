@@ -72,6 +72,8 @@ if not ADMIN_PORTAL_ONLY:
     app.include_router(drawing_versions.router)
     from app.api.routes import app_settings
     app.include_router(app_settings.router)
+    from app.api.routes import general_tolerances
+    app.include_router(general_tolerances.router)
     from app.api.routes import scans, tablets
     app.include_router(tablets.router)
     app.include_router(scans.router)

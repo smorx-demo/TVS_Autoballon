@@ -140,8 +140,21 @@ def _load_meta(job_id: str) -> dict:
     return json.loads(p.read_text(encoding="utf-8"))
 
 
+def _gt_refresh(job_id: str, meta: dict) -> None:
+    """General tolerances: (re)fill open-dimension tolerances on the report rows before saving."""
+    try:
+        from app.services.general_tolerance.apply import refresh_job
+
+        refresh_job(meta, _job_dir(job_id))
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("general tolerances: refresh failed for job %s", job_id)
+
+
 def _save_meta(job_id: str, meta: dict, *, sync_files: bool = True) -> None:
     jd = _job_dir(job_id)
+    _gt_refresh(job_id, meta)
     (jd / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     meta.setdefault("id", job_id)
     if sync_files:
@@ -171,6 +184,7 @@ def _save_meta(job_id: str, meta: dict, *, sync_files: bool = True) -> None:
 def _save_meta_local(job_id: str, meta: dict) -> None:
     """Write meta.json only — skip S3/Postgres (used for large report PDF path)."""
     jd = _job_dir(job_id)
+    _gt_refresh(job_id, meta)
     (jd / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
 def _renumber(balloons: list[dict], *, compact: bool = False) -> list[dict]:
@@ -842,6 +856,7 @@ async def upload_pdfs(
         "id": job_id,
         "owner": user["id"],
         "owner_username": user.get("username") or "",
+        "org_id": user.get("org_id") or "default",
         "files": saved,
         "active_file": 0,
         "page_count": page_count,
@@ -1419,6 +1434,9 @@ def _merge_report_row(prev: dict, row: dict, b: dict, zone_map: dict) -> dict:
     row["remarks"] = prev.get("remarks", "")
     row["tol_low"] = prev.get("tol_low") or row.get("tol_low", "")
     row["tol_high"] = prev.get("tol_high") or row.get("tol_high", "")
+    for k in ("tol_source", "tol_flags", "tol_auto", "tol_angle", "tol_category", "tol_size"):
+        if k in prev:
+            row[k] = prev[k]
     zone_ref = zone_map.get((page, bno)) or zone_map.get(bno)
     if zone_ref:
         row["reference"] = zone_ref

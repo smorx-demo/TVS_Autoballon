@@ -157,6 +157,53 @@ def _draw_title_grid(page: fitz.Page, payload: dict, margin: float, page_w: floa
     return (sig_y + 18) - y0 + 8
 
 
+def tolerance_source_label(row: dict) -> str:
+    """Short 'Tolerance source' cell text for exports (full text stays on the row / in JSON)."""
+    src = str(row.get("tol_source") or "").strip()
+    if not src:
+        return "Drawing" if (str(row.get("tol_low") or "").strip() or str(row.get("tol_high") or "").strip()) else ""
+    if src.startswith("General tol – "):
+        src = "GT " + src[len("General tol – "):]
+    elif src.startswith("None – "):
+        src = "None: " + src[len("None – "):]
+    flags = [f for f in (row.get("tol_flags") or []) if f and not src.endswith(f)]
+    if flags and row.get("tol_auto"):
+        src += " [" + "; ".join(flags) + "]"
+    return src
+
+
+def is_auto_tolerance(row: dict) -> bool:
+    return bool(row.get("tol_auto"))
+
+
+def _fit_lines(text: str, font: str, size: float, width: float, max_lines: int = 2) -> list[str]:
+    """Wrap at ' / ' or spaces into at most max_lines lines that fit `width`; the last is cut with '...'."""
+    def w(s: str) -> float:
+        return fitz.get_text_length(s, fontname=font, fontsize=size)
+
+    words = text.replace(" / ", " /\x00").replace(" ", "\x00").split("\x00")
+    lines: list[str] = []
+    cur = ""
+    for wd in words:
+        cand = f"{cur} {wd}".strip() if cur else wd
+        if w(cand) <= width or not cur:
+            cur = cand
+        else:
+            lines.append(cur)
+            cur = wd
+    if cur:
+        lines.append(cur)
+    if len(lines) > max_lines:
+        lines = lines[:max_lines - 1] + [" ".join(lines[max_lines - 1:])]
+    out = []
+    for ln in lines:
+        cut = False
+        while len(ln) > 3 and w(ln + ("..." if cut else "")) > width:
+            ln, cut = ln[:-1].rstrip(), True
+        out.append(ln + ("..." if cut else ""))
+    return out
+
+
 def _measure_cols(payload: dict) -> list[dict]:
     cols = list(payload.get("measure_columns") or [])
     if cols:
@@ -185,7 +232,7 @@ def build_report_pdf(payload: dict, logo_path: Path | None = None) -> bytes:
     version_rows = {str(n) for n in version_hl.get("rows") or []}
 
     headers = [
-        "S.No", "Balloon\nNo.", "Reference", "Nominal", "Tol\n(low)", "Tol\n(high)",
+        "S.No", "Balloon\nNo.", "Reference", "Nominal", "Tol\n(low)", "Tol\n(high)", "Tol.\nsource",
         "Instrument", "Unit", "Instr. ID",
     ]
     for col in measure_cols:
@@ -194,7 +241,7 @@ def build_report_pdf(payload: dict, logo_path: Path | None = None) -> bytes:
 
     margin = 24
     usable = page_w - 2 * margin
-    base_weights = [28, 36, 70, 48, 36, 36, 70, 32, 55] + [52] * len(measure_cols) + [70]
+    base_weights = [28, 36, 70, 48, 36, 36, 78, 70, 32, 55] + [52] * len(measure_cols) + [70]
     weights = base_weights[: len(headers)]
     while len(weights) < len(headers):
         weights.insert(-1, 52)
@@ -257,8 +304,8 @@ def build_report_pdf(payload: dict, logo_path: Path | None = None) -> bytes:
         grid_h = _draw_title_grid(page, payload, margin, page_w, y + 44)
         return 44 + grid_h + 8
 
-    measure_start = 9
-    measure_end = 9 + len(measure_cols)
+    measure_start = 10
+    measure_end = 10 + len(measure_cols)
     n_rows = max(len(rows), 1)
 
     for start in range(0, n_rows, rows_per_page):
@@ -292,7 +339,7 @@ def build_report_pdf(payload: dict, logo_path: Path | None = None) -> bytes:
         chunk = rows[start : start + rows_per_page] if rows else [{}]
         # Batch fills: group cells by fill color, one finish() per color group
         fill_groups: dict[tuple[float, float, float], list[fitz.Rect]] = {}
-        text_jobs: list[tuple[fitz.Rect, str]] = []
+        text_jobs: list[tuple[fitz.Rect, str, str]] = []
 
         for ri, row in enumerate(chunk):
             measured = list(row.get("measured") or [])
@@ -320,12 +367,14 @@ def build_report_pdf(payload: dict, logo_path: Path | None = None) -> bytes:
                 str(row.get("nominal", "")),
                 str(row.get("tol_low", "")),
                 str(row.get("tol_high", "")),
+                tolerance_source_label(row),
                 str(row.get("instrument", "")),
                 str(row.get("unit", "")),
                 str(row.get("instr_id", "")),
                 *measure_vals,
                 str(row.get("remarks", "")),
             ]
+            auto = is_auto_tolerance(row)
 
             row_fill = C_ROW_A if ri % 2 == 0 else C_ROW_B
             if bkey in version_rows:
@@ -340,8 +389,12 @@ def build_report_pdf(payload: dict, logo_path: Path | None = None) -> bytes:
                         fill = _status_color(st)
                 fill_groups.setdefault(fill, []).append(r)
                 display = _cell_text(cell)
-                if display:
-                    text_jobs.append((r, display))
+                font = "heit" if (auto and i in (4, 5, 6)) else "helv"
+                if i == 6 and display:   # source column: up to two 5.5 pt lines that fit the cell
+                    for k, line in enumerate(_fit_lines(display, font, 5.5, col_w[i] - 4)):
+                        text_jobs.append((r, line, font, 5.5, 7.5 + k * 6.5))
+                elif display:
+                    text_jobs.append((r, display, font, 7, 12))
                 x += col_w[i]
             y += row_h
 
@@ -352,13 +405,13 @@ def build_report_pdf(payload: dict, logo_path: Path | None = None) -> bytes:
             shape.finish(color=C_BORDER, fill=fill, width=0.35)
             shape.commit()
 
-        for r, display in text_jobs:
+        for r, display, font, size, dy in text_jobs:
             # insert_text is faster than textbox for short centered-ish values
             page.insert_text(
-                fitz.Point(r.x0 + 2, r.y0 + 12),
+                fitz.Point(r.x0 + 2, r.y0 + dy),
                 display,
-                fontsize=7,
-                fontname="helv",
+                fontsize=size,
+                fontname=font,
                 color=C_TEXT,
             )
 
@@ -389,13 +442,13 @@ def build_report_xlsx(
     measure_maps = [dict(col.get("values") or {}) for col in measure_cols]
 
     headers = [
-        "S.No", "Balloon\nNo.", "Reference", "Nominal", "Tol\n(low)", "Tol\n(high)",
+        "S.No", "Balloon\nNo.", "Reference", "Nominal", "Tol\n(low)", "Tol\n(high)", "Tolerance\nsource",
         "Instrument", "Unit", "Instr. ID",
     ]
     headers += [str(col.get("label") or "M") for col in measure_cols]
     headers.append("Remarks")
     n_cols = len(headers)
-    widths = [7, 9, 16, 12, 9, 9, 16, 8, 13] + [12] * len(measure_cols) + [22]
+    widths = [7, 9, 16, 12, 9, 9, 30, 16, 8, 13] + [12] * len(measure_cols) + [22]
 
     def fill(rgb: tuple[float, float, float]) -> PatternFill:
         return PatternFill("solid", fgColor=_xl_hex(rgb))
@@ -503,8 +556,8 @@ def build_report_xlsx(
         cell.alignment = center
     r += 1
 
-    measure_start = 9
-    measure_end = 9 + len(measure_cols)
+    measure_start = 10
+    measure_end = 10 + len(measure_cols)
     status_fills = {s: fill(_status_color(s)) for s in ("green", "yellow", "red")}
     band_fills = [fill(C_ROW_A), fill(C_ROW_B)]
     for ri, row in enumerate(rows):
@@ -523,12 +576,14 @@ def build_report_xlsx(
             row.get("nominal", ""),
             row.get("tol_low", ""),
             row.get("tol_high", ""),
+            tolerance_source_label(row),
             row.get("instrument", ""),
             row.get("unit", ""),
             row.get("instr_id", ""),
             *measure_vals,
             row.get("remarks", ""),
         ]
+        auto = is_auto_tolerance(row)
         band = band_fills[ri % 2]
         if bkey in version_rows:
             band = fill(C_VERSION_ROW)
@@ -538,6 +593,8 @@ def build_report_xlsx(
             cell.border = border
             cell.alignment = center
             cell.fill = band
+            if auto and i in (4, 5, 6):  # general tolerance / rule: italic, not printed on the drawing
+                cell.font = Font(italic=True, color="1F4E79")
             if measure_start <= i < measure_end:
                 status = measure_status(
                     str(row.get("nominal", "")),
@@ -623,6 +680,9 @@ def parse_tolerance(text: str) -> tuple[str, str, str]:
     Unparseable tolerance → first number as nominal and empty limits.
     """
     t = (text or "").replace("−", "-").replace("–", "-").replace("±", "±")
+    # Count prefix '2× R6', '4× Ø9', '2× 0.5 × 45°' is a quantity, not the nominal
+    # (a chamfer '2 × 45°' has no symbol / second '×' after the '×' and is left alone).
+    t = re.sub(r"^\s*\d+\s*[×xX]\s*(?=[RØ⌀SM]|\d+(?:[.,]\d+)?\s*[×xX])", "", t)
     m = re.search(r"(" + _NUM + r")\s*°?\s*±\s*(" + _NUM + r")", t)
     if m:
         d = _n(m.group(2))
@@ -774,7 +834,7 @@ def report_rows_to_csv(rows: list[dict], measure_columns: list[dict] | None = No
 
     measure_columns = measure_columns or []
     headers = [
-        "S.No", "Page", "Balloon", "Reference", "Nominal", "Tol low", "Tol high",
+        "S.No", "Page", "Balloon", "Reference", "Nominal", "Tol low", "Tol high", "Tolerance source",
         "Instrument", "Unit", "Instr. ID", "Measured 1", "Measured 2", "Remarks",
     ]
     for col in measure_columns:
@@ -792,7 +852,7 @@ def report_rows_to_csv(rows: list[dict], measure_columns: list[dict] | None = No
             extra.append((col.get("values") or {}).get(bkey, ""))
         writer.writerow([
             row.get("sno"), row.get("page", 1), row.get("balloon"), row.get("reference"),
-            row.get("nominal"), row.get("tol_low"), row.get("tol_high"),
+            row.get("nominal"), row.get("tol_low"), row.get("tol_high"), tolerance_source_label(row),
             row.get("instrument"), row.get("unit"), row.get("instr_id"),
             measured[0], measured[1] if len(measured) > 1 else "", *extra, row.get("remarks"),
         ])
@@ -850,5 +910,6 @@ def report_payload_to_json(
         "rows": rows,
         "measure_columns": meta.get("measure_columns") or default_measure_columns(),
         "balloons": meta.get("balloons") or [],
+        "general_tolerance": (meta.get("general_tolerance") or {}).get("banner") or {},
     }
     return json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")

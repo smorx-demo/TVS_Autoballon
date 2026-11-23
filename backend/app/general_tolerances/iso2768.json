@@ -1,0 +1,54 @@
+{
+  "standard": "ISO 2768",
+  "title": "ISO 2768-1 general tolerances for linear and angular dimensions",
+  "equivalents": ["IS 2102", "IS 2102-1", "IS:2102-PART-I"],
+  "equivalence_note": "IS 2102 (Part 1) uses the same tolerance classes and values as ISO 2768-1.",
+  "classes": {"f": "fine", "m": "medium", "c": "coarse", "v": "very coarse"},
+  "geometric_classes": {"H": "ISO 2768-2 class H", "K": "ISO 2768-2 class K", "L": "ISO 2768-2 class L"},
+  "geometric_note": "The second letter (H/K/L) is the ISO 2768-2 geometric class. It is stored but never applied to size dimensions.",
+  "range_convention": {
+    "default": "upper_inclusive",
+    "explicit_symbols": "Bands are 'over X up to and including Y'; the first band includes its lower value (0.5).",
+    "confirmed_by_tvs": true
+  },
+  "cell_format": "Chart text: '±0.1' = +0.1/-0.1; '±1°30'' = degrees and minutes; null = '-' (no general tolerance).",
+  "tables": {
+    "linear": {
+      "title": "Linear dimensions (incl. diameters)",
+      "kind": "size",
+      "unit": "mm",
+      "bands": [["0.5-3", 0.5, 3], [">3-6", 3, 6], [">6-30", 6, 30], [">30-120", 30, 120], [">120-400", 120, 400],
+                [">400-1000", 400, 1000], [">1000-2000", 1000, 2000], [">2000-4000", 2000, 4000]],
+      "columns": {
+        "f": {"label": "f (fine)", "values": ["±0.05", "±0.05", "±0.1", "±0.15", "±0.2", "±0.3", "±0.5", null]},
+        "m": {"label": "m (medium)", "values": ["±0.1", "±0.1", "±0.2", "±0.3", "±0.5", "±0.8", "±1.2", "±2"]},
+        "c": {"label": "c (coarse)", "values": ["±0.2", "±0.3", "±0.5", "±0.8", "±1.2", "±2", "±3", "±4"]},
+        "v": {"label": "v (very coarse)", "values": [null, "±0.5", "±1", "±1.5", "±2.5", "±4", "±6", "±8"]}
+      }
+    },
+    "radius_chamfer": {
+      "title": "Radii and chamfer heights",
+      "kind": "size",
+      "unit": "mm",
+      "bands": [["0.5-3", 0.5, 3], [">3-6", 3, 6], [">6", 6, null]],
+      "columns": {
+        "f": {"label": "f (fine)", "values": ["±0.2", "±0.5", "±1"]},
+        "m": {"label": "m (medium)", "values": ["±0.2", "±0.5", "±1"]},
+        "c": {"label": "c (coarse)", "values": ["±0.4", "±1", "±2"]},
+        "v": {"label": "v (very coarse)", "values": ["±0.4", "±1", "±2"]}
+      }
+    },
+    "angular": {
+      "title": "Angular dimensions (by length of the shorter leg)",
+      "kind": "angular",
+      "unit": "deg",
+      "bands": [["≤10", null, 10], [">10-50", 10, 50], [">50-120", 50, 120], [">120-400", 120, 400], [">400", 400, null]],
+      "columns": {
+        "f": {"label": "f (fine)", "values": ["±1°", "±0°30'", "±0°20'", "±0°10'", "±0°5'"]},
+        "m": {"label": "m (medium)", "values": ["±1°", "±0°30'", "±0°20'", "±0°10'", "±0°5'"]},
+        "c": {"label": "c (coarse)", "values": ["±1°30'", "±1°", "±0°30'", "±0°15'", "±0°10'"]},
+        "v": {"label": "v (very coarse)", "values": ["±3°", "±2°", "±1°", "±0°20'", "±0°20'"]}
+      }
+    }
+  }
+}

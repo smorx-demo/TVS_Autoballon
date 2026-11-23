@@ -1,0 +1,75 @@
+/* General tolerances — every selector is prefixed gt- */
+
+.gt-banner {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--blue);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  background: rgba(61, 126, 255, 0.06);
+}
+.gt-banner-warn { border-left-color: var(--gold); background: rgba(201, 162, 39, 0.07); }
+.gt-banner-main { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.gt-banner-tag {
+  font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 4px;
+  background: var(--blue); color: #fff; letter-spacing: 0.04em;
+}
+.gt-banner-text { font-weight: 600; }
+.gt-banner-counts { font-size: 12px; }
+.gt-banner-btn { margin-left: auto; width: auto; }
+.gt-banner-flags { margin: 6px 0 0 18px; padding: 0; font-size: 12px; color: var(--gold); }
+.gt-banner-edit { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-top: 10px; }
+.gt-banner-edit label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.gt-banner-edit select, .gt-banner-edit input { min-width: 160px; }
+.gt-banner-note { font-size: 11px; }
+
+/* tolerance cells */
+.report-table td input.gt-auto { font-style: italic; color: #8fb6ff; }
+.report-table td input.gt-manual { color: var(--gold); }
+.report-table td input.gt-none { border-color: rgba(217, 83, 79, 0.6); }
+.gt-tol-cell { display: flex; align-items: center; gap: 3px; }
+.gt-badge {
+  flex: none; font-size: 10px; font-weight: 700; line-height: 1; padding: 3px 4px; border-radius: 4px;
+  border: 1px solid transparent; cursor: help; background: transparent; width: auto;
+}
+.gt-badge-gt { color: #8fb6ff; border-color: rgba(143, 182, 255, 0.5); }
+.gt-badge-rule { color: #7ee0a8; border-color: rgba(126, 224, 168, 0.5); }
+.gt-badge-manual { color: var(--gold); border-color: rgba(201, 162, 39, 0.6); cursor: pointer; }
+.gt-badge-none { color: var(--danger); border-color: rgba(217, 83, 79, 0.6); }
+
+/* teach-once dialog */
+.gt-teach-backdrop {
+  position: fixed; inset: 0; z-index: 1200; background: rgba(0, 0, 0, 0.6);
+  display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px; overflow: auto;
+}
+.gt-teach {
+  width: min(640px, 100%); background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+  padding: 18px 20px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+}
+.gt-teach h3 { margin: 0 0 4px; }
+.gt-teach-opts { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; }
+.gt-teach-opt {
+  display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 8px; cursor: pointer;
+}
+.gt-teach-opt.sel { border-color: var(--blue); background: rgba(61, 126, 255, 0.08); }
+.gt-teach-opt input { width: auto; margin-top: 3px; }
+.gt-teach-opt span { display: flex; flex-direction: column; gap: 2px; }
+.gt-teach-range { display: flex; flex-wrap: wrap; gap: 10px; }
+.gt-teach-range label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.gt-teach-name { flex: 1 1 220px; }
+.gt-teach-err { color: var(--danger); }
+.gt-teach-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+
+/* admin panel */
+.gt-admin-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.gt-admin-grid label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.gt-admin-grid label.gt-check { flex-direction: row; align-items: center; gap: 8px; }
+.gt-admin-grid label.gt-check input { width: auto; }
+.gt-admin-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; align-items: center; }
+.gt-admin-actions .btn { width: auto; }
+.gt-rule-off td { opacity: 0.5; }
+.gt-std-table { font-size: 12px; margin: 6px 0 14px; }
+.gt-std-table td, .gt-std-table th { padding: 3px 6px; }
+.gt-transcription { color: var(--gold); font-size: 12px; }
+.gt-preview-list { font-size: 12px; margin: 6px 0 0 18px; }

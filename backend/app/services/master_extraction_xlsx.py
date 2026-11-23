@@ -25,6 +25,17 @@ def _sheet(wb, title: str, headers: list[str], rows: list[list[Any]]):
             cell.alignment = wrap
 
 
+def _tolerance_lookup(meta: dict) -> dict:
+    """(page, text) -> report row of its balloon (tolerance + source)."""
+    rows = {(int(r.get("page") or 1), int(r.get("balloon") or 0)): r for r in meta.get("report_rows") or []}
+    out = {}
+    for b in meta.get("balloons") or []:
+        r = rows.get((int(b.get("page") or 1), int(b.get("balloon") or 0)))
+        if r is not None:
+            out.setdefault((int(b.get("page") or 1), str(b.get("text") or "").replace(" ", "")), r)
+    return out
+
+
 def build_master_extraction_xlsx(meta: dict, full: dict | None = None) -> bytes:
     from openpyxl import Workbook
 
@@ -47,23 +58,37 @@ def build_master_extraction_xlsx(meta: dict, full: dict | None = None) -> bytes:
     mm = full.get("model_3d_manifest") or {}
     summary.append(["3D/PVZ manifest", mm.get("summary", "")])
 
-    dim_rows = [
-        [
+    from app.services.report_pdf import tolerance_source_label
+
+    tol_by = _tolerance_lookup(meta)
+    dim_rows, auto_rows = [], []
+    for d in full.get("dimensions") or []:
+        r = tol_by.get((int(d.get("page") or 1), str(d.get("text") or "").replace(" ", ""))) or {}
+        dim_rows.append([
             d.get("page"),
             d.get("x"),
             d.get("y"),
             d.get("text"),
             d.get("category"),
             d.get("pattern"),
-        ]
-        for d in full.get("dimensions") or []
-    ]
+            r.get("tol_low", ""),
+            r.get("tol_high", ""),
+            tolerance_source_label(r) if r else "",
+        ])
+        auto_rows.append(bool(r.get("tol_auto")))
     _sheet(
         wb,
         "All_Dimensions",
-        ["Sheet", "X", "Y", "Text", "Category", "Pattern"],
+        ["Sheet", "X", "Y", "Text", "Category", "Pattern", "Tol low", "Tol high", "Tolerance source"],
         dim_rows,
     )
+    from openpyxl.styles import Font
+
+    ws_dims = wb["All_Dimensions"]
+    for i, auto in enumerate(auto_rows, start=2):
+        if auto:
+            for col in (7, 8, 9):
+                ws_dims.cell(row=i, column=col).font = Font(italic=True, color="1F4E79")
 
     gdt_rows = [
         [

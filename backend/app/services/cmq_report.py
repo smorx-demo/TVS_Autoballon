@@ -33,16 +33,16 @@ def _result(statuses: list[str]) -> str:
 
 def _sheet_grid(payload: dict, chunk, sheet_no: int, sheet_count: int, n_actual: int) -> SheetGrid:
     mf = {**default_master_fields(), **(payload.get("master_fields") or {})}
-    a0 = 5  # first actual-dimension column
+    a0 = 6  # first actual-dimension column
     res = a0 + n_actual
     rem = res + 1  # last column
-    weights = [30, 95, 60, 45, 60] + [140 / n_actual] * n_actual + [50, 75]
+    weights = [30, 95, 60, 45, 55, 60] + [140 / n_actual] * n_actual + [50, 75]
 
     cells: list[GridCell] = []
     heights: list[float] = []
 
-    def add(r, c0, c1, text, style, rowspan=1, status="empty"):
-        cells.append(GridCell(r, c0, c1, text, style, rowspan, status))
+    def add(r, c0, c1, text, style, rowspan=1, status="empty", italic=False):
+        cells.append(GridCell(r, c0, c1, text, style, rowspan, status, italic))
 
     doc_no = mf["cmq_doc_no"]
     sheet_txt = f"Sheet {sheet_no:02d} of {sheet_count:02d}"
@@ -76,10 +76,11 @@ def _sheet_grid(payload: dict, chunk, sheet_no: int, sheet_count: int, n_actual:
     heights += [18, 16]
     add(r, 0, 0, "Sl.\nNo.", "head", 2)
     add(r, 1, 1, "Parameter\nDescription", "head", 2)
-    add(r, 2, 3, "Specification", "head")
+    add(r, 2, 4, "Specification", "head")
     add(r + 1, 2, 2, "Dim", "head")
     add(r + 1, 3, 3, "Tol", "head")
-    add(r, 4, 4, "Instrument\nUsed", "head", 2)
+    add(r + 1, 4, 4, "Tol source", "head")
+    add(r, 5, 5, "Instrument\nUsed", "head", 2)
     add(r, a0, res - 1, "Actual Dimension", "head")
     labels = [str(c.get("label") or "") for c in _measure_cols(payload)]
     labels = (labels + [""] * n_actual)[:n_actual]
@@ -93,9 +94,9 @@ def _sheet_grid(payload: dict, chunk, sheet_no: int, sheet_count: int, n_actual:
         heights.append(16)
         mrow = chunk[i] if i < len(chunk) else None
         if mrow:
-            m = mrow.cells  # [bno, param, spec, zone, tol, instrument, instr_id, *actuals, remarks]
-            actuals = m[7 : 7 + n_actual]
-            values = [m[0], m[1], _dimension_only(m[2]), m[4], m[5], *actuals, _result(mrow.statuses), m[-1]]
+            m = mrow.cells  # [bno, param, spec, zone, tol, tol source, instrument, instr_id, *actuals, remarks]
+            actuals = m[8 : 8 + n_actual]
+            values = [m[0], m[1], _dimension_only(m[2]), m[4], m[5], m[6], *actuals, _result(mrow.statuses), m[-1]]
         else:
             values = [""] * (rem + 1)
         for c, text in enumerate(values):
@@ -104,7 +105,7 @@ def _sheet_grid(payload: dict, chunk, sheet_no: int, sheet_count: int, n_actual:
                 status = mrow.statuses[c - a0]
             elif mrow and c == res and text:
                 status = "red" if text == "NOT OK" else "green"
-            add(r, c, c, text, "data", status=status)
+            add(r, c, c, text, "data", status=status, italic=bool(mrow and mrow.auto and c in (3, 4)))
         r += 1
 
     heights.append(22)

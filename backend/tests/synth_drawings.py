@@ -769,6 +769,198 @@ def _write_key(rows: list[dict], notes, key_path: Path):
     wb.save(str(key_path))
 
 
+# =============================================================================
+# general-tolerance drawings (TSDS0407): open dimensions with real geometry
+# =============================================================================
+
+PT = 72 / 25.4  # points per mm at 1:1
+
+
+def _outline_text_fn(font_path: Path):
+    """Sheet.text replacement drawing glyph outlines (vector strokes, no text layer)."""
+    from fontTools.pens.basePen import BasePen
+    from fontTools.ttLib import TTFont
+
+    tt = TTFont(str(font_path))
+    gs = tt.getGlyphSet()
+    cmap = tt.getBestCmap()
+    upm = tt["head"].unitsPerEm
+
+    class _Pen(BasePen):
+        def __init__(self, glyphset, xf, shape):
+            super().__init__(glyphset)
+            self.xf, self.shape, self.cur, self.start = xf, shape, None, None
+
+        def _moveTo(self, p):
+            self.cur = self.start = self.xf(p)
+
+        def _lineTo(self, p):
+            q = self.xf(p)
+            self.shape.draw_line(self.cur, q)
+            self.cur = q
+
+        def _curveToOne(self, p1, p2, p3):
+            q3 = self.xf(p3)
+            self.shape.draw_bezier(self.cur, self.xf(p1), self.xf(p2), q3)
+            self.cur = q3
+
+        def _closePath(self):
+            if self.cur is not None and self.start is not None and (self.cur.x, self.cur.y) != (self.start.x, self.start.y):
+                self.shape.draw_line(self.cur, self.start)
+
+    def text(sheet, p, s, size=9.5, rotate=0, morph=None):
+        k = size / upm
+        shape = sheet.page.new_shape()
+        x = 0.0
+        for ch in s:
+            g = cmap.get(ord(ch)) or cmap.get(ord("?"))
+            if g is None:
+                continue
+            ox = x
+
+            def xf(pt, ox=ox):
+                u, v = (ox + pt[0]) * k, -pt[1] * k
+                if rotate == 90:
+                    return fitz.Point(p.x + v, p.y - u)
+                return fitz.Point(p.x + u, p.y + v)
+            gs[g].draw(_Pen(gs, xf, shape))
+            x += gs[g].width
+        shape.finish(color=(0, 0, 0), fill=(0, 0, 0), width=0, closePath=False)
+        shape.commit()
+    return text
+
+
+def _thick_line(sh: Sheet, a, b, width=1.3):
+    sh.line(a, b, width)
+
+
+def _thick_circle(sh: Sheet, c, r, width=1.3):
+    shp = sh.page.new_shape()
+    shp.draw_circle(c, r)
+    shp.finish(width=width, color=(0, 0, 0))
+    shp.commit()
+
+
+def _dim_line(sh: Sheet, a, b):
+    sh.line(a, b, 0.5)
+    sh.arrow(a, b)
+    sh.arrow(b, a)
+
+
+def _dia_on_circle(sh: Sheet, c: fitz.Point, dia_mm: float, label: str):
+    """Diameter dimension across a circle (arrows on the circle), text above the line."""
+    r = dia_mm * PT / 2
+    _dim_line(sh, fitz.Point(c.x - r, c.y), fitz.Point(c.x + r, c.y))
+    sh.text(fitz.Point(c.x - tw(label, 9.5) / 2, c.y - 4), label, 9.5)
+
+
+def _linear(sh: Sheet, x0: float, y: float, mm: float, label: str):
+    a, b = fitz.Point(x0, y), fitz.Point(x0 + mm * PT, y)
+    for q in (a, b):
+        sh.line(fitz.Point(q.x, y - 14), fitz.Point(q.x, y + 4), 0.5)
+    if mm * PT >= 15:
+        _dim_line(sh, a, b)
+    else:  # short dimension: arrows from outside
+        sh.line(fitz.Point(a.x - 14, y), fitz.Point(b.x + 14, y), 0.5)
+        sh.arrow(a, fitz.Point(a.x - 10, y))
+        sh.arrow(b, fitz.Point(b.x + 10, y))
+    sh.text(fitz.Point((a.x + b.x) / 2 - tw(label, 9.5) / 2, y - 4), label, 9.5)
+
+
+def make_gentol_drawing(variant: str, pdf_path: Path, *, stroked: bool = False, state_standard: bool = True) -> dict:
+    """
+    One-sheet drawing for the general-tolerance tests. variant 'machining' or 'hpdc'.
+    Returns {"expected": {text: {...}}, "note": general-tolerance note}. `stroked` draws every
+    text as glyph outlines (no text layer), as TVS CAD exports often do. `state_standard=False`
+    leaves the general-tolerance note out (drawing states no standard).
+    """
+    rng = random.Random(7)
+    doc = fitz.open()
+    sh = Sheet(doc, 1)
+    if stroked:
+        font = Path(r"C:\Windows\Fonts\arial.ttf")
+        for cand in (font, Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")):
+            if cand.exists():
+                fn = _outline_text_fn(cand)
+                sh.text = lambda p, s, size=9.5, rotate=0, morph=None, _fn=fn: _fn(sh, p, s, size, rotate, morph)
+                break
+        else:
+            raise FileNotFoundError("no TrueType font for the stroked-text variant")
+    _frame(sh, rng, 1)
+    notes_x, y = 830.0, 130.0
+    sh.text(fitz.Point(notes_x, y), "GENERAL NOTES", 9.5)
+    gt_note = "UNSPECIFIED TOLERANCES AS PER TSDS0407."
+    lines = [f"1. {gt_note}" if state_standard else "1. DIMENSIONS IN mm."]
+    if variant == "machining":
+        lines += ["2. MATERIAL EN8. MACHINED ALL OVER.", "3. REMOVE ALL BURRS AND SHARP EDGES."]
+    else:
+        lines += ["2. MATERIAL ADC12, HPDC.", "3. REMOVE ALL BURRS AND SHARP EDGES."]
+    for i, ln in enumerate(lines):
+        sh.text(fitz.Point(notes_x, y + 22 + i * 13), ln, 7.4)
+
+    exp: dict = {}
+    if variant == "machining":
+        # Ø20 shaft: end view, a lone circle
+        c = fitz.Point(160, 230)
+        _thick_circle(sh, c, 10 * PT)
+        _dia_on_circle(sh, c, 20, "Ø20")
+        exp["shaft"] = {"text": "Ø20", "near": c, "upper": 0.0, "lower": -0.2, "col": "outside Ø"}
+        # Ø20 bore in a plate
+        plate = fitz.Rect(330, 150, 560, 330)
+        for a, b in ((plate.tl, plate.tr), (plate.tr, plate.br), (plate.br, plate.bl), (plate.bl, plate.tl)):
+            _thick_line(sh, a, b)
+        c2 = fitz.Point(400, 240)
+        _thick_circle(sh, c2, 10 * PT)
+        _dia_on_circle(sh, c2, 20, "Ø20")
+        exp["bore"] = {"text": "Ø20", "near": c2, "upper": 0.2, "lower": 0.0, "col": "inside Ø boring"}
+        # Ø8 drilled hole (leader callout)
+        c3 = fitz.Point(500, 290)
+        _thick_circle(sh, c3, 4 * PT)
+        tip = fitz.Point(c3.x + 4 * PT * 0.707, c3.y - 4 * PT * 0.707)
+        sh.line(tip, fitz.Point(600, 200), 0.5)
+        sh.arrow(tip, fitz.Point(600, 200))
+        sh.line(fitz.Point(600, 200), fitz.Point(640, 200), 0.5)
+        sh.text(fitz.Point(604, 196), "Ø8 DRILL", 9.5)
+        exp["drill"] = {"text": "Ø8 DRILL", "upper": 0.4, "lower": 0.0, "col": "inside Ø drilling"}
+        # lengths 50 and 4
+        _linear(sh, 120, 420, 50, "50")
+        exp["len50"] = {"text": "50", "upper": 0.2, "lower": -0.2, "col": "length"}
+        _linear(sh, 360, 420, 4, "4")
+        exp["len4"] = {"text": "4", "upper": 0.1, "lower": -0.1, "col": "length"}
+        # chamfer, radii
+        sh.text(fitz.Point(120, 500), "1 × 45°", 9.5)
+        exp["chamfer"] = {"text": "1 × 45°", "upper": 0.25, "lower": -0.25, "angle": 1.5}
+        sh.text(fitz.Point(300, 500), "R2", 9.5)
+        exp["r2"] = {"text": "R2", "upper": 0.25, "lower": -0.25}
+        sh.text(fitz.Point(380, 500), "R5", 9.5)
+        exp["r5"] = {"text": "R5", "upper": 0.5, "lower": -0.5}
+        sh.text(fitz.Point(450, 500), "R20", 9.5)
+        exp["r20"] = {"text": "R20", "upper": None, "lower": None, "flag": "not specified"}
+    else:
+        _linear(sh, 120, 420, 30, "30")
+        exp["len30"] = {"text": "30", "upper": 0.3, "lower": -0.3}
+        # O.D 30: lone circle
+        c = fitz.Point(160, 230)
+        _thick_circle(sh, c, 15 * PT)
+        _dia_on_circle(sh, c, 30, "Ø30")
+        exp["od30"] = {"text": "Ø30", "near": c, "upper": 0.0, "lower": -0.4}
+        # I.D 30 and a machined Ø40 bore in a casting plate
+        plate = fitz.Rect(300, 130, 700, 360)
+        for a, b in ((plate.tl, plate.tr), (plate.tr, plate.br), (plate.br, plate.bl), (plate.bl, plate.tl)):
+            _thick_line(sh, a, b)
+        c2 = fitz.Point(390, 245)
+        _thick_circle(sh, c2, 15 * PT)
+        _dia_on_circle(sh, c2, 30, "Ø30")
+        exp["id30"] = {"text": "Ø30", "near": c2, "upper": 0.4, "lower": 0.0}
+        c3 = fitz.Point(590, 245)
+        _thick_circle(sh, c3, 20 * PT)
+        _dia_on_circle(sh, c3, 40, "Ø40")
+        exp["bore40"] = {"text": "Ø40", "near": c3, "upper": 0.2, "lower": 0.0, "override": "machining"}
+    doc.save(str(pdf_path))
+    doc.close()
+    return {"expected": exp, "note": gt_note}
+
+
 if __name__ == "__main__":
     out = Path(sys.argv[1] if len(sys.argv) > 1 else ".")
     out.mkdir(parents=True, exist_ok=True)

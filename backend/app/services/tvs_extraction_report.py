@@ -813,6 +813,32 @@ def _header(ws, columns: list[tuple[str, float]]) -> None:
     ws.freeze_panes = "A2"
 
 
+def _balloons_by_zone(features: list[dict]) -> list[list]:
+    """Summary rows 'Sheet 1 · Zone B3' | count | '5, 6, 12' in sheet → zone row letter → zone column order."""
+    groups: dict[tuple, list[int]] = {}
+    for f in features:
+        no = f.get("Balloon No.")
+        if not isinstance(no, int):
+            continue
+        zone = str(f.get("Zone") or "").strip()
+        zone = "" if zone in ("-", "None") else zone
+        groups.setdefault((f.get("Sheet"), zone), []).append(no)
+
+    def order(k: tuple) -> tuple:
+        sheet, zone = k
+        m = re.fullmatch(r"([A-Za-z]+)-?(\d+)", zone)
+        zk = (0, m.group(1).upper(), int(m.group(2))) if m else (1, zone, 0)
+        return (_sheet_no(sheet) == 0, _sheet_no(sheet), str(sheet), zk)
+
+    rows = []
+    for key in sorted(groups, key=order):
+        sheet, zone = key
+        nos = sorted(groups[key])
+        where = f"Sheet {sheet}" if _sheet_no(sheet) else str(sheet)
+        rows.append([f"{where} · Zone {zone or '(none)'}", len(nos), ", ".join(str(n) for n in nos)])
+    return rows
+
+
 def _sheet_no(v) -> int:
     """Drawing sheet number; 0 for non-sheet locations such as '3D'."""
     try:
@@ -874,6 +900,12 @@ def _scope_coverage(features: list[dict], notes: list[dict]) -> list[tuple[str, 
 def _extraction_rows(src_pdf: Path, sheets: set[int] | None = None,
                      area: tuple[int, fitz.Rect] | None = None) -> tuple[list[dict], list[dict], int, str]:
     """Run the drawing extractor and shape its output into report rows."""
+    return _extraction_rows_full(src_pdf, sheets, area)[:5]
+
+
+def _extraction_rows_full(src_pdf: Path, sheets: set[int] | None = None,
+                          area: tuple[int, fitz.Rect] | None = None):
+    """_extraction_rows plus the extractor Features in row order (general tolerances need them)."""
     from app.services.tvs_extractor import PT_TO_MM as _MM, extract_drawing, near_border_note
 
     ext = extract_drawing(src_pdf)
@@ -955,7 +987,7 @@ def _extraction_rows(src_pdf: Path, sheets: set[int] | None = None,
             r = doc[0].rect
             size = f"{round(r.width * PT_TO_MM)} x {round(r.height * PT_TO_MM)} mm"
         orphans = [(s, t) for s, t in ext.orphans if not sheets or s in sheets]
-        return rows, note_rows, doc.page_count, size, orphans
+        return rows, note_rows, doc.page_count, size, orphans, feats
     finally:
         doc.close()
 
@@ -991,20 +1023,29 @@ def _title_fields(src_pdf: Path, meta: dict) -> dict[str, str]:
 
 def build_tvs_extraction_xlsx(meta: dict, src_pdf: Path, report_rows: list[dict] | None = None,
                               balloons: list[dict] | None = None, *, page: int | None = None,
-                              area: tuple[int, fitz.Rect] | None = None, prepared: dict | None = None) -> bytes:
+                              area: tuple[int, fitz.Rect] | None = None, prepared: dict | None = None,
+                              general_tolerances: bool = True) -> bytes:
     """
     TVS extraction report for a drawing. Features and notes come from the drawing extractor
     (tvs_extractor); `page` / `area` restrict the report to one sheet or a work area.
-    `report_rows` / `balloons` are accepted for API compatibility and are not used.
+    `report_rows` supply manual tolerance overrides (tol_source "Manual") for open dimensions;
+    `balloons` is accepted for API compatibility and is not used.
+    `general_tolerances` fills Upper/Lower/Max/Min of open dimensions from the drawing's general-
+    tolerance standard / rules (columns unchanged; source + flags appended to Notes; Summary section).
     `prepared` (STEP PMI report): rows / notes built elsewhere plus Summary extras — keys
     features, notes, sheet_count, size, orphans, title (dict), ident, coordinates, sections
     [(title, header, rows)].
     """
+    prepared_sections: list = []
     if prepared is not None:
         features, notes = prepared["features"], prepared["notes"]
         sheet_count, size, orphans = prepared.get("sheet_count", 0), prepared.get("size", ""), prepared.get("orphans", [])
     else:
-        features, notes, sheet_count, size, orphans = _extraction_rows(Path(src_pdf), {page} if page else None, area)
+        features, notes, sheet_count, size, orphans, feats = _extraction_rows_full(Path(src_pdf), {page} if page else None, area)
+        if general_tolerances:
+            gt_section = _general_tolerance_section(meta, Path(src_pdf), features, feats, report_rows)
+            if gt_section is not None:
+                prepared_sections.append(gt_section)
 
     wb = Workbook()
     # --- Summary ---
@@ -1063,7 +1104,17 @@ def build_tvs_extraction_xlsx(meta: dict, src_pdf: Path, report_rows: list[dict]
         ws.append([label, len(fids), ", ".join(fids)])
     ws.append(["Notes & textual information", n_items, "See Notes tab"])
     ws.append(["Unaccounted text runs", len(orphans), "; ".join(f"S{s}: {t}" for s, t in orphans) or "none"])
-    for title, header, rows in (prepared or {}).get("sections", []):
+    zone_rows = _balloons_by_zone(features)
+    if zone_rows:
+        ws.append([])
+        ws.append(["Balloons by zone"])
+        ws.cell(row=ws.max_row, column=1).font = Font(bold=True)
+        ws.append(["Sheet / zone", "Count", "Balloon Nos."])
+        for c in ws[ws.max_row][:3]:
+            c.font = Font(bold=True)
+        for r in zone_rows:
+            ws.append(r)
+    for title, header, rows in list((prepared or {}).get("sections", [])) + prepared_sections:
         ws.append([])
         ws.append([title])
         ws.cell(row=ws.max_row, column=1).font = Font(bold=True)
@@ -1080,8 +1131,12 @@ def build_tvs_extraction_xlsx(meta: dict, src_pdf: Path, report_rows: list[dict]
     ws = wb.create_sheet("Extraction")
     _header(ws, EXTRACTION_COLUMNS)
     keys = [name for name, _ in EXTRACTION_COLUMNS]
+    tol_cols = [keys.index(k) + 1 for k in ("Upper tolerance", "Lower tolerance", "Max limit", "Min limit")]
     for f in features:
         ws.append([f[k] for k in keys])
+        if f.get("_tol_auto"):  # general tolerance / rule value: italic, not printed on the drawing
+            for ci in tol_cols:
+                ws.cell(row=ws.max_row, column=ci).font = Font(italic=True, color="1F4E79")
     for row in ws.iter_rows(min_row=2):
         for c in row:
             c.alignment = WRAP
@@ -1102,6 +1157,33 @@ def build_tvs_extraction_xlsx(meta: dict, src_pdf: Path, report_rows: list[dict]
     return buf.getvalue()
 
 
-def build_tvs_extraction_from_pdf(src_pdf: Path, meta: dict | None = None) -> bytes:
+def build_tvs_extraction_from_pdf(src_pdf: Path, meta: dict | None = None, *, general_tolerances: bool = True) -> bytes:
     """End-to-end: drawing PDF → TVS extraction report bytes (used by the evaluator / CLI)."""
-    return build_tvs_extraction_xlsx(meta or {}, Path(src_pdf))
+    return build_tvs_extraction_xlsx(meta or {}, Path(src_pdf), general_tolerances=general_tolerances)
+
+
+def _general_tolerance_section(meta: dict, src_pdf: Path, rows: list[dict], feats: list,
+                               report_rows: list[dict] | None):
+    """Fill open-dimension tolerances on the Extraction rows; return the Summary section."""
+    try:
+        from app.services.general_tolerance import apply as gt
+
+        files = (meta or {}).get("files") or [{}]
+        ctx = gt.context_for_pdf(src_pdf, org_id=str((meta or {}).get("org_id") or "default"),
+                                 part_number=str((meta or {}).get("part_number") or ""),
+                                 file_name=str(files[0].get("name") or src_pdf.name),
+                                 material=str((meta or {}).get("material") or ""))
+        overrides = {}
+        for r in report_rows or []:
+            if r.get("tol_source") == "Manual":
+                try:
+                    overrides[int(r.get("balloon") or 0)] = r
+                except (TypeError, ValueError):
+                    continue
+        counts = gt.apply_to_extraction_rows(rows, feats, ctx, overrides)
+        return gt.summary_section(ctx, counts)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("general tolerances: TVS extraction report")
+        return None
